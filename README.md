@@ -60,7 +60,7 @@ system that is connected but never used still gets a pool, marked unused.
 | `race(…)` whose arms are each one wait | event-based gateway, each arm's result on its flow |
 | any other `race(…)` | subprocess: a parallel split, each arm ending in a terminate end event |
 | `all(f, g)` | parallel split and join |
-| `callback(…)` | event subprocess with a message start event; non-interrupting when `once: false` |
+| `callback(…)` | non-interrupting event subprocess with a message start event (a callback never ends the run); "fires at most once" in its documentation unless `once: false` |
 | a call to a function declared in the file | call activity, and that function's own pool |
 | a call to a plugin | service task "Run plugin …" |
 | expressions and plain assignments | no node: folded into the documentation of the step that uses them ("where category = …") |
