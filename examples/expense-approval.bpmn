@@ -147,7 +147,7 @@ Ties: when arms settle in the same moment listen-fire lands every one; BPMN take
       <bpmn:documentation>approve = callback({ })
 Fires at most once.
 It shares the run's data, as a callback shares the run's scope.</bpmn:documentation>
-      <bpmn:startEvent id="StartEvent_2" name="approve called">
+      <bpmn:startEvent id="StartEvent_2" name="approve called" isInterrupting="false">
         <bpmn:outgoing>Flow_18</bpmn:outgoing>
         <bpmn:messageEventDefinition id="MessageEventDefinition_4" messageRef="Message_2" />
       </bpmn:startEvent>
@@ -160,7 +160,7 @@ It shares the run's data, as a callback shares the run's scope.</bpmn:documentat
       <bpmn:documentation>reject  = callback({ })
 Fires at most once.
 It shares the run's data, as a callback shares the run's scope.</bpmn:documentation>
-      <bpmn:startEvent id="StartEvent_3" name="reject called">
+      <bpmn:startEvent id="StartEvent_3" name="reject called" isInterrupting="false">
         <bpmn:outgoing>Flow_19</bpmn:outgoing>
         <bpmn:messageEventDefinition id="MessageEventDefinition_5" messageRef="Message_3" />
       </bpmn:startEvent>

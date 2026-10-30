@@ -1130,7 +1130,8 @@ function lowerCallback(callback: CallbackExpression, binding: string | undefined
   ctx.handlers.push({
     name: `When ${name} is called`,
     message: `${name} Called`,
-    interrupting: !repeatable,
+    // A callback firing never ends the run; the main flow is often waiting on it.
+    interrupting: false,
     doc: [
       sourceOf(ctx.index, span),
       repeatable ? 'Repeatable: fires every time it is called.' : 'Fires at most once.',
