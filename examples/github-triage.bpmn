@@ -1,0 +1,219 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" id="Definitions_1" targetNamespace="https://listen-fire.dev/schema/bpmn" exporter="listen-fire-bpmn" exporterVersion="0.1.0">
+  <bpmn:collaboration id="Collaboration_1">
+    <bpmn:participant id="Participant_1" name="triage" processRef="Process_triage" />
+    <bpmn:participant id="Participant_2" name="GitHub">
+      <bpmn:documentation>Connected system: `gh = connect github …`. Drawn as a black box.</bpmn:documentation>
+    </bpmn:participant>
+    <bpmn:participant id="Participant_3" name="Slack">
+      <bpmn:documentation>Connected system: `chat = connect slack …`. Drawn as a black box.</bpmn:documentation>
+    </bpmn:participant>
+    <bpmn:messageFlow id="MessageFlow_1" sourceRef="Participant_2" targetRef="SubProcess_1" />
+    <bpmn:messageFlow id="MessageFlow_2" sourceRef="Participant_2" targetRef="ServiceTask_1" />
+    <bpmn:messageFlow id="MessageFlow_3" sourceRef="Participant_2" targetRef="ServiceTask_2" />
+    <bpmn:messageFlow id="MessageFlow_4" sourceRef="Participant_3" targetRef="ServiceTask_3" />
+    <bpmn:messageFlow id="MessageFlow_5" sourceRef="SendTask_1" targetRef="Participant_3" />
+  </bpmn:collaboration>
+  <bpmn:process id="Process_triage" name="triage" isExecutable="false">
+    <bpmn:documentation>Function `triage` in github-triage.mvt, drawn by listen-fire-bpmn from the parsed program.
+Connected systems it touches: GitHub, Slack.
+Queries are carried as text, types are dropped, and expressions are folded into the steps that use them; the program is the authority.</bpmn:documentation>
+    <bpmn:startEvent id="StartEvent_1" name="On schedule 30 8 * * 1-5">
+      <bpmn:documentation>listen to cron { schedule: "30 8 * * 1-5" } fire triage</bpmn:documentation>
+      <bpmn:outgoing>Flow_4</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="TimerEventDefinition_1">
+        <bpmn:timeCycle xsi:type="bpmn:tFormalExpression">30 8 * * 1-5</bpmn:timeCycle>
+      </bpmn:timerEventDefinition>
+    </bpmn:startEvent>
+    <bpmn:subProcess id="SubProcess_1" name="For each GitHub Notification">
+      <bpmn:documentation>Runs once per record of gh-[n:Notifications WHERE n.Reason IN ["review_requested", "mention"] ORDER BY n.`Updated At` DESC]-&gt;
+Each run's return is collected into lines.</bpmn:documentation>
+      <bpmn:incoming>Flow_4</bpmn:incoming>
+      <bpmn:outgoing>Flow_5</bpmn:outgoing>
+      <bpmn:multiInstanceLoopCharacteristics id="MultiInstanceLoopCharacteristics_1" isSequential="true" />
+      <bpmn:startEvent id="StartEvent_2">
+        <bpmn:outgoing>Flow_1</bpmn:outgoing>
+      </bpmn:startEvent>
+      <bpmn:serviceTask id="ServiceTask_1" name="Read GitHub Pull Request and Issue">
+        <bpmn:documentation>url = coalesce(n-[:`Pull Request`]-&gt;.`HTML URL`, n-[:Issue]-&gt;.`HTML URL`, "")</bpmn:documentation>
+        <bpmn:incoming>Flow_1</bpmn:incoming>
+        <bpmn:outgoing>Flow_2</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:sequenceFlow id="Flow_1" sourceRef="StartEvent_2" targetRef="ServiceTask_1" />
+      <bpmn:serviceTask id="ServiceTask_2" name="Read GitHub Repository">
+        <bpmn:documentation>n-[:Repository]-&gt;</bpmn:documentation>
+        <bpmn:incoming>Flow_2</bpmn:incoming>
+        <bpmn:outgoing>Flow_3</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:sequenceFlow id="Flow_2" sourceRef="ServiceTask_1" targetRef="ServiceTask_2" />
+      <bpmn:endEvent id="EndEvent_1" name="Return">
+        <bpmn:documentation>return "• ${n-[:Repository]-&gt;.`Full Name`}: ${n.Title} (${n.Reason}) ${url}"</bpmn:documentation>
+        <bpmn:incoming>Flow_3</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_3" sourceRef="ServiceTask_2" targetRef="EndEvent_1" />
+    </bpmn:subProcess>
+    <bpmn:sequenceFlow id="Flow_4" sourceRef="StartEvent_1" targetRef="SubProcess_1" />
+    <bpmn:exclusiveGateway id="ExclusiveGateway_1" default="Flow_7">
+      <bpmn:incoming>Flow_5</bpmn:incoming>
+      <bpmn:outgoing>Flow_6</bpmn:outgoing>
+      <bpmn:outgoing>Flow_7</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:sequenceFlow id="Flow_5" sourceRef="SubProcess_1" targetRef="ExclusiveGateway_1" />
+    <bpmn:endEvent id="EndEvent_2" name="Return &#34;nothing needs you&#34;">
+      <bpmn:documentation>return "nothing needs you" </bpmn:documentation>
+      <bpmn:incoming>Flow_6</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_6" name="count(lines) == 0" sourceRef="ExclusiveGateway_1" targetRef="EndEvent_2">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">count(lines) == 0</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:serviceTask id="ServiceTask_3" name="Read Slack Channels">
+      <bpmn:documentation>channel = only(chat-[ch:Channels WHERE ch.Name == "general"]-&gt;)</bpmn:documentation>
+      <bpmn:incoming>Flow_7</bpmn:incoming>
+      <bpmn:outgoing>Flow_8</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:sequenceFlow id="Flow_7" sourceRef="ExclusiveGateway_1" targetRef="ServiceTask_3" />
+    <bpmn:exclusiveGateway id="ExclusiveGateway_2" default="Flow_10">
+      <bpmn:incoming>Flow_8</bpmn:incoming>
+      <bpmn:outgoing>Flow_9</bpmn:outgoing>
+      <bpmn:outgoing>Flow_10</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:sequenceFlow id="Flow_8" sourceRef="ServiceTask_3" targetRef="ExclusiveGateway_2" />
+    <bpmn:endEvent id="EndEvent_3" name="Fail: no #general channel">
+      <bpmn:documentation>fail("no #general channel") </bpmn:documentation>
+      <bpmn:incoming>Flow_9</bpmn:incoming>
+      <bpmn:errorEventDefinition id="ErrorEventDefinition_1" errorRef="Error_1" />
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_9" name="channel == null" sourceRef="ExclusiveGateway_2" targetRef="EndEvent_3">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">channel == null</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sendTask id="SendTask_1" name="Post to Slack channel">
+      <bpmn:documentation>write channel-[:Messages]-&gt; { Message: "GitHub needs you:\n${Text.join(lines, "\n")}" }</bpmn:documentation>
+      <bpmn:incoming>Flow_10</bpmn:incoming>
+      <bpmn:outgoing>Flow_11</bpmn:outgoing>
+    </bpmn:sendTask>
+    <bpmn:sequenceFlow id="Flow_10" sourceRef="ExclusiveGateway_2" targetRef="SendTask_1" />
+    <bpmn:endEvent id="EndEvent_4" name="Done">
+      <bpmn:incoming>Flow_11</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_11" sourceRef="SendTask_1" targetRef="EndEvent_4" />
+  </bpmn:process>
+  <bpmn:error id="Error_1" name="no #general channel" />
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="Collaboration_1">
+      <bpmndi:BPMNShape id="Participant_1_di" bpmnElement="Participant_1" isHorizontal="true">
+        <dc:Bounds x="0" y="0" width="1436" height="276" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="StartEvent_1_di" bpmnElement="StartEvent_1">
+        <dc:Bounds x="70" y="97" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="SubProcess_1_di" bpmnElement="SubProcess_1" isExpanded="true">
+        <dc:Bounds x="156" y="40" width="482" height="150" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="StartEvent_2_di" bpmnElement="StartEvent_2">
+        <dc:Bounds x="186" y="102" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ServiceTask_1_di" bpmnElement="ServiceTask_1">
+        <dc:Bounds x="272" y="80" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_1_di" bpmnElement="Flow_1">
+        <di:waypoint x="222" y="120" />
+        <di:waypoint x="272" y="120" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="ServiceTask_2_di" bpmnElement="ServiceTask_2">
+        <dc:Bounds x="422" y="80" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_2_di" bpmnElement="Flow_2">
+        <di:waypoint x="372" y="120" />
+        <di:waypoint x="422" y="120" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="EndEvent_1_di" bpmnElement="EndEvent_1">
+        <dc:Bounds x="572" y="102" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_3_di" bpmnElement="Flow_3">
+        <di:waypoint x="522" y="120" />
+        <di:waypoint x="572" y="120" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_4_di" bpmnElement="Flow_4">
+        <di:waypoint x="106" y="115" />
+        <di:waypoint x="156" y="115" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="ExclusiveGateway_1_di" bpmnElement="ExclusiveGateway_1">
+        <dc:Bounds x="688" y="90" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_5_di" bpmnElement="Flow_5">
+        <di:waypoint x="638" y="115" />
+        <di:waypoint x="688" y="115" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="EndEvent_2_di" bpmnElement="EndEvent_2">
+        <dc:Bounds x="788" y="200" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_6_di" bpmnElement="Flow_6">
+        <di:waypoint x="713" y="140" />
+        <di:waypoint x="713" y="218" />
+        <di:waypoint x="788" y="218" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="ServiceTask_3_di" bpmnElement="ServiceTask_3">
+        <dc:Bounds x="874" y="75" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_7_di" bpmnElement="Flow_7">
+        <di:waypoint x="738" y="115" />
+        <di:waypoint x="874" y="115" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="ExclusiveGateway_2_di" bpmnElement="ExclusiveGateway_2">
+        <dc:Bounds x="1024" y="90" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_8_di" bpmnElement="Flow_8">
+        <di:waypoint x="974" y="115" />
+        <di:waypoint x="1024" y="115" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="EndEvent_3_di" bpmnElement="EndEvent_3">
+        <dc:Bounds x="1124" y="200" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_9_di" bpmnElement="Flow_9">
+        <di:waypoint x="1049" y="140" />
+        <di:waypoint x="1049" y="218" />
+        <di:waypoint x="1124" y="218" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="SendTask_1_di" bpmnElement="SendTask_1">
+        <dc:Bounds x="1210" y="75" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_10_di" bpmnElement="Flow_10">
+        <di:waypoint x="1074" y="115" />
+        <di:waypoint x="1210" y="115" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="EndEvent_4_di" bpmnElement="EndEvent_4">
+        <dc:Bounds x="1360" y="97" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_11_di" bpmnElement="Flow_11">
+        <di:waypoint x="1310" y="115" />
+        <di:waypoint x="1360" y="115" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="Participant_2_di" bpmnElement="Participant_2" isHorizontal="true">
+        <dc:Bounds x="0" y="316" width="1436" height="60" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Participant_3_di" bpmnElement="Participant_3" isHorizontal="true">
+        <dc:Bounds x="0" y="416" width="1436" height="60" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="MessageFlow_1_di" bpmnElement="MessageFlow_1">
+        <di:waypoint x="397" y="316" />
+        <di:waypoint x="397" y="190" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MessageFlow_2_di" bpmnElement="MessageFlow_2">
+        <di:waypoint x="322" y="316" />
+        <di:waypoint x="322" y="160" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MessageFlow_3_di" bpmnElement="MessageFlow_3">
+        <di:waypoint x="472" y="316" />
+        <di:waypoint x="472" y="160" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MessageFlow_4_di" bpmnElement="MessageFlow_4">
+        <di:waypoint x="924" y="416" />
+        <di:waypoint x="924" y="155" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MessageFlow_5_di" bpmnElement="MessageFlow_5">
+        <di:waypoint x="1260" y="155" />
+        <di:waypoint x="1260" y="416" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

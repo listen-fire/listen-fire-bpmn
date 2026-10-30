@@ -1,0 +1,356 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" id="Definitions_1" targetNamespace="https://listen-fire.dev/schema/bpmn" exporter="listen-fire-bpmn" exporterVersion="0.1.0">
+  <bpmn:collaboration id="Collaboration_1">
+    <bpmn:participant id="Participant_1" name="Review Expense" processRef="Process_Review_Expense" />
+    <bpmn:participant id="Participant_2" name="Airtable">
+      <bpmn:documentation>Connected system: `finance = connect airtable …`. Drawn as a black box.</bpmn:documentation>
+    </bpmn:participant>
+    <bpmn:participant id="Participant_3" name="Slack">
+      <bpmn:documentation>Connected system: `chat = connect slack …`. Drawn as a black box.</bpmn:documentation>
+    </bpmn:participant>
+    <bpmn:messageFlow id="MessageFlow_1" sourceRef="Participant_2" targetRef="StartEvent_1" />
+    <bpmn:messageFlow id="MessageFlow_2" sourceRef="Participant_2" targetRef="ServiceTask_1" />
+    <bpmn:messageFlow id="MessageFlow_3" sourceRef="Participant_3" targetRef="ServiceTask_2" />
+    <bpmn:messageFlow id="MessageFlow_4" sourceRef="SendTask_1" targetRef="Participant_3" />
+    <bpmn:messageFlow id="MessageFlow_5" sourceRef="ServiceTask_3" targetRef="Participant_2" />
+  </bpmn:collaboration>
+  <bpmn:process id="Process_Review_Expense" name="Review Expense" isExecutable="false">
+    <bpmn:documentation>Function `Review Expense` in expense-approval.mvt, drawn by listen-fire-bpmn from the parsed program.
+Connected systems it touches: Airtable, Slack.
+Queries are carried as text, types are dropped, and expressions are folded into the steps that use them; the program is the authority.</bpmn:documentation>
+    <bpmn:startEvent id="StartEvent_1" name="On Airtable Record Change">
+      <bpmn:documentation>listen to finance { base: "Finance", table: "Expenses", events: ["record.created"] } fire Review Expense</bpmn:documentation>
+      <bpmn:outgoing>Flow_1</bpmn:outgoing>
+      <bpmn:messageEventDefinition id="MessageEventDefinition_1" messageRef="Message_1" />
+    </bpmn:startEvent>
+    <bpmn:serviceTask id="ServiceTask_1" name="Read Airtable Record">
+      <bpmn:documentation>expense = only(change-[:Record]-&gt;)</bpmn:documentation>
+      <bpmn:incoming>Flow_1</bpmn:incoming>
+      <bpmn:outgoing>Flow_2</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:sequenceFlow id="Flow_1" sourceRef="StartEvent_1" targetRef="ServiceTask_1" />
+    <bpmn:exclusiveGateway id="ExclusiveGateway_1" default="Flow_15">
+      <bpmn:incoming>Flow_2</bpmn:incoming>
+      <bpmn:outgoing>Flow_3</bpmn:outgoing>
+      <bpmn:outgoing>Flow_15</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:sequenceFlow id="Flow_2" sourceRef="ServiceTask_1" targetRef="ExclusiveGateway_1" />
+    <bpmn:serviceTask id="ServiceTask_2" name="Read Slack Channels">
+      <bpmn:documentation>finance_channel = only(chat-[ch:Channels WHERE ch.Name == "finance"]-&gt;)</bpmn:documentation>
+      <bpmn:incoming>Flow_3</bpmn:incoming>
+      <bpmn:outgoing>Flow_4</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:sequenceFlow id="Flow_3" name="expense != null &#38;&#38; expense.Am…" sourceRef="ExclusiveGateway_1" targetRef="ServiceTask_2">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">expense != null &amp;&amp; expense.Amount &gt; 500</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:exclusiveGateway id="ExclusiveGateway_2" default="Flow_6">
+      <bpmn:incoming>Flow_4</bpmn:incoming>
+      <bpmn:outgoing>Flow_5</bpmn:outgoing>
+      <bpmn:outgoing>Flow_6</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:sequenceFlow id="Flow_4" sourceRef="ServiceTask_2" targetRef="ExclusiveGateway_2" />
+    <bpmn:endEvent id="EndEvent_1" name="Fail: no #finance channel">
+      <bpmn:documentation>fail("no #finance channel") </bpmn:documentation>
+      <bpmn:incoming>Flow_5</bpmn:incoming>
+      <bpmn:errorEventDefinition id="ErrorEventDefinition_1" errorRef="Error_1" />
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_5" name="finance_channel == null" sourceRef="ExclusiveGateway_2" targetRef="EndEvent_1">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">finance_channel == null</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sendTask id="SendTask_1" name="Post to Slack channel">
+      <bpmn:documentation>write finance_channel-[:Messages]-&gt; {
+      Message: "New expense over 500: ${expense.Amount}"
+      Blocks: [
+        { type: "section", text: { type: "mrkdwn", text: "New expense over 500: *${expense.Amount}*" } },
+        { type: "actions", elements: [
+          { type: "button", text: { type: "plain_text", text: "Approve" }, value: "${approve.id}" },
+          { type: "button", text: { type: "plain_text", text: "Reject" }, value: "${reject.id}" },
+        ] },
+      ]
+    }</bpmn:documentation>
+      <bpmn:incoming>Flow_6</bpmn:incoming>
+      <bpmn:outgoing>Flow_7</bpmn:outgoing>
+    </bpmn:sendTask>
+    <bpmn:sequenceFlow id="Flow_6" sourceRef="ExclusiveGateway_2" targetRef="SendTask_1" />
+    <bpmn:eventBasedGateway id="EventBasedGateway_1">
+      <bpmn:documentation>r = race(
+      () =&gt; {
+        await first(approve-[:Called]-&gt;)
+        return "Approved"
+      },
+      () =&gt; {
+        await first(reject-[:Called]-&gt;)
+        return "Rejected"
+      },
+      () =&gt; {
+        await sleep(1d)
+        return "Expired"
+      },
+    )
+Ties: when arms settle in the same moment listen-fire lands every one; BPMN takes one.</bpmn:documentation>
+      <bpmn:incoming>Flow_7</bpmn:incoming>
+      <bpmn:outgoing>Flow_8</bpmn:outgoing>
+      <bpmn:outgoing>Flow_9</bpmn:outgoing>
+      <bpmn:outgoing>Flow_10</bpmn:outgoing>
+    </bpmn:eventBasedGateway>
+    <bpmn:sequenceFlow id="Flow_7" sourceRef="SendTask_1" targetRef="EventBasedGateway_1" />
+    <bpmn:intermediateCatchEvent id="IntermediateCatchEvent_1" name="Wait for approve to be called">
+      <bpmn:documentation>await first(approve-[:Called]-&gt;)</bpmn:documentation>
+      <bpmn:incoming>Flow_8</bpmn:incoming>
+      <bpmn:outgoing>Flow_11</bpmn:outgoing>
+      <bpmn:messageEventDefinition id="MessageEventDefinition_2" messageRef="Message_2" />
+    </bpmn:intermediateCatchEvent>
+    <bpmn:sequenceFlow id="Flow_8" sourceRef="EventBasedGateway_1" targetRef="IntermediateCatchEvent_1" />
+    <bpmn:intermediateCatchEvent id="IntermediateCatchEvent_2" name="Wait for reject to be called">
+      <bpmn:documentation>await first(reject-[:Called]-&gt;)</bpmn:documentation>
+      <bpmn:incoming>Flow_9</bpmn:incoming>
+      <bpmn:outgoing>Flow_12</bpmn:outgoing>
+      <bpmn:messageEventDefinition id="MessageEventDefinition_3" messageRef="Message_3" />
+    </bpmn:intermediateCatchEvent>
+    <bpmn:sequenceFlow id="Flow_9" sourceRef="EventBasedGateway_1" targetRef="IntermediateCatchEvent_2" />
+    <bpmn:intermediateCatchEvent id="IntermediateCatchEvent_3" name="Wait 1 day">
+      <bpmn:documentation>await sleep(1d)</bpmn:documentation>
+      <bpmn:incoming>Flow_10</bpmn:incoming>
+      <bpmn:outgoing>Flow_13</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="TimerEventDefinition_1">
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">P1D</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:intermediateCatchEvent>
+    <bpmn:sequenceFlow id="Flow_10" sourceRef="EventBasedGateway_1" targetRef="IntermediateCatchEvent_3" />
+    <bpmn:exclusiveGateway id="ExclusiveGateway_3">
+      <bpmn:incoming>Flow_11</bpmn:incoming>
+      <bpmn:incoming>Flow_12</bpmn:incoming>
+      <bpmn:incoming>Flow_13</bpmn:incoming>
+      <bpmn:outgoing>Flow_14</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:sequenceFlow id="Flow_11" name="&#34;Approved&#34;" sourceRef="IntermediateCatchEvent_1" targetRef="ExclusiveGateway_3" />
+    <bpmn:sequenceFlow id="Flow_12" name="&#34;Rejected&#34;" sourceRef="IntermediateCatchEvent_2" targetRef="ExclusiveGateway_3" />
+    <bpmn:sequenceFlow id="Flow_13" name="&#34;Expired&#34;" sourceRef="IntermediateCatchEvent_3" targetRef="ExclusiveGateway_3" />
+    <bpmn:serviceTask id="ServiceTask_3" name="Update Airtable Record">
+      <bpmn:documentation>write expense { Status: coalesce(r[0], r[1], r[2]) }</bpmn:documentation>
+      <bpmn:incoming>Flow_14</bpmn:incoming>
+      <bpmn:outgoing>Flow_16</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:sequenceFlow id="Flow_14" sourceRef="ExclusiveGateway_3" targetRef="ServiceTask_3" />
+    <bpmn:exclusiveGateway id="ExclusiveGateway_4">
+      <bpmn:incoming>Flow_15</bpmn:incoming>
+      <bpmn:incoming>Flow_16</bpmn:incoming>
+      <bpmn:outgoing>Flow_17</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:sequenceFlow id="Flow_15" sourceRef="ExclusiveGateway_1" targetRef="ExclusiveGateway_4" />
+    <bpmn:sequenceFlow id="Flow_16" sourceRef="ServiceTask_3" targetRef="ExclusiveGateway_4" />
+    <bpmn:endEvent id="EndEvent_2" name="Done">
+      <bpmn:incoming>Flow_17</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_17" sourceRef="ExclusiveGateway_4" targetRef="EndEvent_2" />
+    <bpmn:subProcess id="SubProcess_1" name="When approve is called" triggeredByEvent="true">
+      <bpmn:documentation>approve = callback({ })
+Fires at most once.
+It shares the run's data, as a callback shares the run's scope.</bpmn:documentation>
+      <bpmn:startEvent id="StartEvent_2" name="approve called">
+        <bpmn:outgoing>Flow_18</bpmn:outgoing>
+        <bpmn:messageEventDefinition id="MessageEventDefinition_4" messageRef="Message_2" />
+      </bpmn:startEvent>
+      <bpmn:endEvent id="EndEvent_3" name="Done">
+        <bpmn:incoming>Flow_18</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_18" sourceRef="StartEvent_2" targetRef="EndEvent_3" />
+    </bpmn:subProcess>
+    <bpmn:subProcess id="SubProcess_2" name="When reject is called" triggeredByEvent="true">
+      <bpmn:documentation>reject  = callback({ })
+Fires at most once.
+It shares the run's data, as a callback shares the run's scope.</bpmn:documentation>
+      <bpmn:startEvent id="StartEvent_3" name="reject called">
+        <bpmn:outgoing>Flow_19</bpmn:outgoing>
+        <bpmn:messageEventDefinition id="MessageEventDefinition_5" messageRef="Message_3" />
+      </bpmn:startEvent>
+      <bpmn:endEvent id="EndEvent_4" name="Done">
+        <bpmn:incoming>Flow_19</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_19" sourceRef="StartEvent_3" targetRef="EndEvent_4" />
+    </bpmn:subProcess>
+  </bpmn:process>
+  <bpmn:message id="Message_1" name="Airtable Record Change" />
+  <bpmn:message id="Message_2" name="approve Called" />
+  <bpmn:message id="Message_3" name="reject Called" />
+  <bpmn:error id="Error_1" name="no #finance channel" />
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="Collaboration_1">
+      <bpmndi:BPMNShape id="Participant_1_di" bpmnElement="Participant_1" isHorizontal="true">
+        <dc:Bounds x="0" y="0" width="1504" height="621" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="StartEvent_1_di" bpmnElement="StartEvent_1">
+        <dc:Bounds x="70" y="62" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ServiceTask_1_di" bpmnElement="ServiceTask_1">
+        <dc:Bounds x="156" y="40" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_1_di" bpmnElement="Flow_1">
+        <di:waypoint x="106" y="80" />
+        <di:waypoint x="156" y="80" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="ExclusiveGateway_1_di" bpmnElement="ExclusiveGateway_1">
+        <dc:Bounds x="306" y="55" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_2_di" bpmnElement="Flow_2">
+        <di:waypoint x="256" y="80" />
+        <di:waypoint x="306" y="80" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="ServiceTask_2_di" bpmnElement="ServiceTask_2">
+        <dc:Bounds x="406" y="165" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_3_di" bpmnElement="Flow_3">
+        <di:waypoint x="331" y="105" />
+        <di:waypoint x="331" y="205" />
+        <di:waypoint x="406" y="205" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="ExclusiveGateway_2_di" bpmnElement="ExclusiveGateway_2">
+        <dc:Bounds x="556" y="180" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_4_di" bpmnElement="Flow_4">
+        <di:waypoint x="506" y="205" />
+        <di:waypoint x="556" y="205" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="EndEvent_1_di" bpmnElement="EndEvent_1">
+        <dc:Bounds x="656" y="290" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_5_di" bpmnElement="Flow_5">
+        <di:waypoint x="581" y="230" />
+        <di:waypoint x="581" y="308" />
+        <di:waypoint x="656" y="308" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="SendTask_1_di" bpmnElement="SendTask_1">
+        <dc:Bounds x="742" y="165" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_6_di" bpmnElement="Flow_6">
+        <di:waypoint x="606" y="205" />
+        <di:waypoint x="742" y="205" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="EventBasedGateway_1_di" bpmnElement="EventBasedGateway_1">
+        <dc:Bounds x="892" y="180" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_7_di" bpmnElement="Flow_7">
+        <di:waypoint x="842" y="205" />
+        <di:waypoint x="892" y="205" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="IntermediateCatchEvent_1_di" bpmnElement="IntermediateCatchEvent_1">
+        <dc:Bounds x="992" y="187" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_8_di" bpmnElement="Flow_8">
+        <di:waypoint x="942" y="205" />
+        <di:waypoint x="992" y="205" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="IntermediateCatchEvent_2_di" bpmnElement="IntermediateCatchEvent_2">
+        <dc:Bounds x="992" y="283" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_9_di" bpmnElement="Flow_9">
+        <di:waypoint x="917" y="230" />
+        <di:waypoint x="917" y="301" />
+        <di:waypoint x="992" y="301" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="IntermediateCatchEvent_3_di" bpmnElement="IntermediateCatchEvent_3">
+        <dc:Bounds x="992" y="379" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_10_di" bpmnElement="Flow_10">
+        <di:waypoint x="917" y="230" />
+        <di:waypoint x="917" y="397" />
+        <di:waypoint x="992" y="397" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="ExclusiveGateway_3_di" bpmnElement="ExclusiveGateway_3">
+        <dc:Bounds x="1078" y="180" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_11_di" bpmnElement="Flow_11">
+        <di:waypoint x="1028" y="205" />
+        <di:waypoint x="1078" y="205" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_12_di" bpmnElement="Flow_12">
+        <di:waypoint x="1028" y="301" />
+        <di:waypoint x="1103" y="301" />
+        <di:waypoint x="1103" y="230" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_13_di" bpmnElement="Flow_13">
+        <di:waypoint x="1028" y="397" />
+        <di:waypoint x="1103" y="397" />
+        <di:waypoint x="1103" y="230" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="ServiceTask_3_di" bpmnElement="ServiceTask_3">
+        <dc:Bounds x="1178" y="165" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_14_di" bpmnElement="Flow_14">
+        <di:waypoint x="1128" y="205" />
+        <di:waypoint x="1178" y="205" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="ExclusiveGateway_4_di" bpmnElement="ExclusiveGateway_4">
+        <dc:Bounds x="1328" y="55" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_15_di" bpmnElement="Flow_15">
+        <di:waypoint x="356" y="80" />
+        <di:waypoint x="1328" y="80" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_16_di" bpmnElement="Flow_16">
+        <di:waypoint x="1278" y="205" />
+        <di:waypoint x="1353" y="205" />
+        <di:waypoint x="1353" y="105" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="EndEvent_2_di" bpmnElement="EndEvent_2">
+        <dc:Bounds x="1428" y="62" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_17_di" bpmnElement="Flow_17">
+        <di:waypoint x="1378" y="80" />
+        <di:waypoint x="1428" y="80" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="SubProcess_1_di" bpmnElement="SubProcess_1" isExpanded="true">
+        <dc:Bounds x="70" y="475" width="182" height="106" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="StartEvent_2_di" bpmnElement="StartEvent_2">
+        <dc:Bounds x="100" y="515" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_3_di" bpmnElement="EndEvent_3">
+        <dc:Bounds x="186" y="515" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_18_di" bpmnElement="Flow_18">
+        <di:waypoint x="136" y="533" />
+        <di:waypoint x="186" y="533" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="SubProcess_2_di" bpmnElement="SubProcess_2" isExpanded="true">
+        <dc:Bounds x="302" y="475" width="182" height="106" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="StartEvent_3_di" bpmnElement="StartEvent_3">
+        <dc:Bounds x="332" y="515" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_4_di" bpmnElement="EndEvent_4">
+        <dc:Bounds x="418" y="515" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_19_di" bpmnElement="Flow_19">
+        <di:waypoint x="368" y="533" />
+        <di:waypoint x="418" y="533" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="Participant_2_di" bpmnElement="Participant_2" isHorizontal="true">
+        <dc:Bounds x="0" y="661" width="1504" height="60" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Participant_3_di" bpmnElement="Participant_3" isHorizontal="true">
+        <dc:Bounds x="0" y="761" width="1504" height="60" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="MessageFlow_1_di" bpmnElement="MessageFlow_1">
+        <di:waypoint x="88" y="661" />
+        <di:waypoint x="88" y="98" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MessageFlow_2_di" bpmnElement="MessageFlow_2">
+        <di:waypoint x="206" y="661" />
+        <di:waypoint x="206" y="120" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MessageFlow_3_di" bpmnElement="MessageFlow_3">
+        <di:waypoint x="456" y="761" />
+        <di:waypoint x="456" y="245" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MessageFlow_4_di" bpmnElement="MessageFlow_4">
+        <di:waypoint x="792" y="245" />
+        <di:waypoint x="792" y="761" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MessageFlow_5_di" bpmnElement="MessageFlow_5">
+        <di:waypoint x="1228" y="245" />
+        <di:waypoint x="1228" y="661" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

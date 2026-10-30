@@ -1,0 +1,64 @@
+import { `@lf/airtable` as airtable, `@lf/slack` as slack, `@lf/ask` as ask } from adapters
+import { my_airtable, my_slack } from credentials
+
+crm   = connect airtable using my_airtable { base: "Deals" }
+chat  = connect slack using my_slack
+asks  = connect ask
+go    = manual()
+
+node Risk: "the risks the deal notes describe" {
+  summary: <text> "one sentence naming the biggest risk"
+}
+
+function `Notify owner`(deal: <crm-[:Deals]->>) {
+  owners = only(chat-[ch:Channels WHERE ch.Name == "deal-owners"]->)
+  if (owners == null) { fail("no #deal-owners channel") }
+  write owners-[:Messages]-> { Message: "Deal ${deal.Name} needs a look" }
+}
+
+function `Review deals`(run: <go-[:invocation]->>) {
+  deals = crm-[d:Deals WHERE d.Stage == "Negotiation"]->
+
+  map(deals, { concurrency: 4, onError: "warn" }, (d) => {
+    risk = extractOne([d.Notes], Risk, { tier: "quick" })
+    headline = ai("a five word headline for: ${d.Notes}")
+    write d { Risk: coalesce(risk.summary, ""), Headline: coalesce(headline, "") }
+  })
+
+  r = all(
+    () => { `Notify owner`(deal: only(deals)) },
+    () => {
+      ops = only(chat-[ch:Channels WHERE ch.Name == "ops"]->)
+      if (ops != null) { write ops-[:Messages]-> { Message: "Deal review started" } }
+    },
+  )
+
+  q = write asks-[:Check]-> { Prompt: "Approve the negotiation batch?" }
+  more = callback({ }, { once: false })
+
+  verdict = race(
+    () => {
+      a = await first(q-[:Response]->)
+      if (a.Answer) {
+        write crm-[:Approvals]-> { Batch: "negotiation", Approved: true }
+        return "approved"
+      } else {
+        return "declined"
+      }
+    },
+    () => {
+      await sleep(2d)
+      write chat-[:Messages]-> { Message: "Nobody answered the batch review" }
+      return "expired"
+    },
+  )
+
+  await until(() => {
+    lead = only(crm-[d:Deals WHERE d.Stage == "Won"]->)
+    return lead != null
+  }, { every: 1h })
+
+  write crm-[:Log]-> { Outcome: coalesce(verdict[0], verdict[1], "unknown") }
+}
+
+listen to go {} fire `Review deals`

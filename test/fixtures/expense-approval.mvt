@@ -1,0 +1,46 @@
+import { `@lf/airtable` as airtable, `@lf/slack` as slack } from adapters
+import { my_airtable, my_slack } from credentials
+
+finance = connect airtable using my_airtable { base: "Finance" }
+chat    = connect slack using my_slack
+
+function `Review Expense`(change: <finance-[e:`Record Change` WHERE e.table == "Expenses"]->>) {
+  expense = only(change-[:Record]->)
+  if (expense != null && expense.Amount > 500) {
+    finance_channel = only(chat-[ch:Channels WHERE ch.Name == "finance"]->)
+    if (finance_channel == null) { fail("no #finance channel") }
+
+    approve = callback({ })
+    reject  = callback({ })
+
+    write finance_channel-[:Messages]-> {
+      Message: "New expense over 500: ${expense.Amount}"
+      Blocks: [
+        { type: "section", text: { type: "mrkdwn", text: "New expense over 500: *${expense.Amount}*" } },
+        { type: "actions", elements: [
+          { type: "button", text: { type: "plain_text", text: "Approve" }, value: "${approve.id}" },
+          { type: "button", text: { type: "plain_text", text: "Reject" }, value: "${reject.id}" },
+        ] },
+      ]
+    }
+
+    r = race(
+      () => {
+        await first(approve-[:Called]->)
+        return "Approved"
+      },
+      () => {
+        await first(reject-[:Called]->)
+        return "Rejected"
+      },
+      () => {
+        await sleep(1d)
+        return "Expired"
+      },
+    )
+
+    write expense { Status: coalesce(r[0], r[1], r[2]) }
+  }
+}
+
+listen to finance { base: "Finance", table: "Expenses", events: ["record.created"] } fire `Review Expense`
