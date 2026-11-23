@@ -3,31 +3,41 @@
 // collections, no jumps), so a tree of sequences, branches and scopes is
 // enough; layout and XML are both a walk over it.
 
-/** A system the program connects to (`gh = connect github using …`). */
+/** A system the program connects to (`gh = connect \`@lf/github\` using …`). */
 export interface System {
   binding: string;
+  /** The adapter, as the story analysis names it (`github`). */
   adapter: string;
-  /** What the diagram calls it: "GitHub", or "Airtable (crm)" when two
-   *  connections share an adapter. */
+  /** What the diagram calls it: the vocabulary's name ("GitHub"), with the
+   *  binding added when two connections share an adapter ("Slack (ops)"). */
   display: string;
+  icon?: string;
 }
 
-/** A task's reach into a connected system, drawn as a message flow. */
+/** A step's reach into a connected system, drawn as a message flow labelled
+ *  "reads Channels" or "writes Messages". */
 export interface Touch {
   system: System;
   direction: 'read' | 'write';
+  /** The edges walked or written along, as the program names them. */
+  what: string;
 }
 
-export type TaskKind = 'service' | 'send' | 'user' | 'call' | 'unmapped';
+/** The kind of step, for its colour: written into the file as BPMN in Color
+ *  and as `lf:kind`, which the viewer stylesheet keys on. */
+export type Look = 'ai' | 'read' | 'write' | 'decision' | 'failure' | 'plain';
+
+export type TaskKind = 'service' | 'user' | 'call' | 'unmapped';
 
 export interface TaskStep {
   kind: 'task';
   task: TaskKind;
   name: string;
+  /** The name the program binds this step's result to, drawn as "→ result". */
+  result?: string;
+  look: Look;
   doc: string[];
   touches: Touch[];
-  /** A model call: `extract(…)`, `extractOne(…)`, `ai(…)`. */
-  ai?: true;
   /** The process a call activity calls. */
   calls?: string;
 }
@@ -41,8 +51,9 @@ export interface WaitStep {
   kind: 'wait';
   trigger: Trigger;
   name: string;
+  result?: string;
   doc: string[];
-  /** The system whose event ends the wait, when there is one. */
+  /** The system whose arrival ends the wait, when there is one. */
   touches: Touch[];
 }
 
@@ -52,12 +63,22 @@ export interface EndStep {
    *  finishing first); `error` ends the run (`fail`). */
   end: 'none' | 'terminate' | 'error';
   name: string;
+  /** An error end's error: the failure message as written. */
+  error?: string;
   doc: string[];
+}
+
+export interface ChoiceArm {
+  /** The condition as the program writes it: the flow's condition expression. */
+  condition: string;
+  /** What the flow is labelled: the condition, or the null rule's words. */
+  label: string;
+  flow: Flow;
 }
 
 export interface ChoiceStep {
   kind: 'choice';
-  arms: Array<{ condition: string; flow: Flow }>;
+  arms: ChoiceArm[];
   /** The `else` arm. Absent: the gateway's default flow carries straight on. */
   otherwise?: Flow;
   doc: string[];
@@ -82,44 +103,28 @@ export interface FirstEventStep {
 export interface ScopeStep {
   kind: 'scope';
   name: string;
+  result?: string;
   doc: string[];
   touches: Touch[];
   repeat?: { sequential: boolean };
-  /** A race of several steps: its arms split in parallel and the first to
-   *  reach a terminate end event ends the scope. */
-  race?: true;
-  body: Body;
+  flow: Flow;
 }
 
 export type Step = TaskStep | WaitStep | EndStep | ChoiceStep | AllStep | FirstEventStep | ScopeStep;
 
 export type Flow = Step[];
 
-/** A callback: an event subprocess started by its message. */
-export interface Handler {
-  name: string;
-  message: string;
-  interrupting: boolean;
-  doc: string[];
-  body: Body;
-}
-
-export interface Body {
-  flow: Flow;
-  handlers: Handler[];
-}
-
 export type Start =
-  | { kind: 'timer'; name: string; cycle: string; doc: string[] }
-  | { kind: 'none'; name: string; doc: string[] }
-  | { kind: 'message'; name: string; message: string; system?: System; doc: string[] };
+  | { kind: 'timer'; name: string; result?: string; cycle?: string; doc: string[] }
+  | { kind: 'none'; name: string; result?: string; doc: string[] }
+  | { kind: 'message'; name: string; result?: string; message: string; touch?: Touch; doc: string[] };
 
 export interface ProcessFlow {
   id: string;
   name: string;
   doc: string[];
   starts: Start[];
-  body: Body;
+  flow: Flow;
 }
 
 export interface Diagram {
@@ -150,6 +155,11 @@ export function stepEnds(step: Step): boolean {
     default:
       return unreachable(step);
   }
+}
+
+/** A step's name as drawn: its result on a line of its own. */
+export function withResult(name: string, result: string | undefined): string {
+  return result === undefined ? name : `${name}\n→ ${result}`;
 }
 
 export function unreachable(value: never): never {

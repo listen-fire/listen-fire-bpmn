@@ -1,45 +1,48 @@
-// The mapping: a parsed program to the diagram's tree (flow.ts). One process
-// per function a `listen` fires, plus one per function those call. Each
-// statement becomes the BPMN construct the mapping names; expressions and
-// plain assignments fold into the steps that use them.
+// The mapping: a checked program to the diagram's tree (flow.ts). One process
+// per function a `listen` fires, plus one per function those call. The parse
+// tree gives the order and nesting of statements and the text of conditions;
+// the story analysis gives which system each step reads or writes, what each
+// listen and wait is on, and which calls are calls of functions.
+// Expressions and plain assignments fold into the steps that use them.
 
 import {
   constructionAsCall,
-  typeNameOf,
+  treeOfSlot,
   writtenArms,
   type ArmExpression,
+  type AwaitExpression,
   type CallStatement,
-  type CallbackExpression,
   type ClosureExpression,
   type CollectionOpExpression,
   type CombinatorExpression,
   type ExprSlot,
+  type Expression,
   type ExtractCallExpression,
   type ExtractExpression,
   type IfStatement,
+  type LanguageVersion,
   type LinkExpression,
   type ListenDeclaration,
   type MatchExpression,
   type MovementDeclaration,
-  type PathHead,
   type Program,
   type RValue,
   type Span,
   type Statement,
+  type StoryWalk,
   type TraversalBlock,
-  type AwaitExpression,
   type WriteExpression,
-  treeOfSlot,
 } from '@listen-fire/movement-lang';
 
-import { emptyFacts, factsOfSlot, mergeFacts, oneLine, walkOfHead, type ExpressionFacts } from './expressions.js';
+import { aliasesOf, edgesOf, type AnalysisIndex, type Read } from './analysis.js';
+import { describeDuration, isoDuration } from './durations.js';
+import { emptyFacts, factsOfSlot, mergeFacts, type ExpressionFacts } from './expressions.js';
 import {
   flowEnds,
   unreachable,
   type Diagram,
   type EndStep,
   type Flow,
-  type Handler,
   type ProcessFlow,
   type Start,
   type Step,
@@ -48,29 +51,20 @@ import {
   type Touch,
   type WaitStep,
 } from './flow.js';
-import { describeDuration, isoDuration } from './durations.js';
+import { conditionLabel, joinWords, oneLine, shorten, templateLabel } from './labels.js';
 
-/** What the diagram knows about a name: where its records come from, and
- *  what kind of thing it is. */
+/** What the diagram keeps about a name the analysis does not draw: a closure
+ *  bound to it, or the assignment folded into the steps that read it. */
 interface Binding {
-  system?: System;
-  /** The kind of record it holds, by the edge that reached it ("Channels"). */
-  label?: string;
-  role?: 'callback' | 'ask';
-  /** An ask's prompt, for naming the wait on its answer. */
-  prompt?: string;
   closure?: ClosureExpression;
-  /** The assignment's source, when the assignment drew nothing of its own. */
   folded?: string;
 }
 
 interface ProgramIndex {
   source: string[];
-  systems: Map<string, System>;
-  /** Constructed instances that are not connected systems (`cron`, `manual`). */
-  instances: Map<string, string>;
+  languageVersion: LanguageVersion;
+  analysis: AnalysisIndex;
   functions: Map<string, MovementDeclaration>;
-  plugins: Set<string>;
   fileScope: Map<string, Binding>;
   processIds: Map<string, string>;
   /** Functions reached by a call, still to be drawn. */
@@ -84,209 +78,168 @@ interface Context {
   /** What `return` draws here: an end event, or a terminate end event in a
    *  race arm (the first arm to finish ends the race). */
   returns: 'none' | 'terminate';
-  /** The enclosing process's or subprocess's callbacks. */
-  handlers: Handler[];
 }
-
-const ADAPTER_NAMES: Record<string, string> = {
-  airtable: 'Airtable',
-  ask: 'Asks (people)',
-  attio: 'Attio',
-  email: 'Email',
-  github: 'GitHub',
-  gmail: 'Gmail',
-  hubspot: 'HubSpot',
-  linear: 'Linear',
-  notion: 'Notion',
-  slack: 'Slack',
-};
-
-/** Edges that deliver a message to a person: a write along one is a send task. */
-const MESSAGE_EDGE = /^(messages?|emails?|posts?|replies|reply|comments?|dms?)$/i;
 
 const COLLECTION_OPS = new Set(['map', 'filter', 'reduce', 'groupby', 'keyby', 'sort']);
 
-export interface LowerOptions {
+export interface LowerInput {
+  program: Program;
+  source: string;
+  analysis: AnalysisIndex;
+  languageVersion: LanguageVersion;
   /** The file's name, for the process documentation. */
   fileName?: string;
 }
 
-export function lowerProgram(program: Program, source: string, options: LowerOptions = {}): Diagram {
-  const index = indexProgram(program, source);
+export function lowerProgram(input: LowerInput): Diagram {
+  const index = indexProgram(input);
   const processes: ProcessFlow[] = [];
-  const listens = program.statements.filter((s): s is ListenDeclaration => s.kind === 'listen');
   const fired = new Map<string, Start[]>();
-  for (const listen of listens) {
-    const fn = index.functions.get(listen.movement);
+  for (const statement of input.program.statements) {
+    if (statement.kind !== 'listen') continue;
+    const fn = index.functions.get(statement.movement);
     if (fn === undefined) {
-      index.warnings.push(`listen fires \`${listen.movement}\`, which is not declared in this file; not drawn`);
+      index.warnings.push(`listen fires \`${statement.movement}\`, which is not declared in this file; not drawn`);
       continue;
     }
-    const starts = fired.get(fn.name) ?? [];
-    starts.push(startOf(listen, fn, index));
-    fired.set(fn.name, starts);
+    fired.set(fn.name, [...(fired.get(fn.name) ?? []), startOf(statement, fn, index)]);
   }
   for (const [name, starts] of fired) {
     const fn = index.functions.get(name);
-    if (fn !== undefined) processes.push(lowerFunction(fn, starts, index, options));
+    if (fn !== undefined) processes.push(lowerFunction(fn, starts, index, input.fileName));
   }
   const drawn = new Set(fired.keys());
-  while (index.calledQueue.length > 0) {
-    const name = index.calledQueue.shift();
-    const fn = name === undefined ? undefined : index.functions.get(name);
+  for (let name = index.calledQueue.shift(); name !== undefined; name = index.calledQueue.shift()) {
+    const fn = index.functions.get(name);
     if (fn === undefined || drawn.has(fn.name)) continue;
     drawn.add(fn.name);
-    processes.push(
-      lowerFunction(fn, [{ kind: 'none', name: 'Called', doc: ['Started by a call from another function.'] }], index, options),
-    );
+    const start: Start = { kind: 'none', name: 'Called', doc: ['Started by a call from another function.'] };
+    processes.push(lowerFunction(fn, [start], index, input.fileName));
   }
   for (const name of index.functions.keys()) {
     if (!drawn.has(name)) index.warnings.push(`function \`${name}\` is neither fired by a listen nor called; not drawn`);
   }
-  return { processes, systems: [...index.systems.values()], warnings: index.warnings };
+  return { processes, systems: input.analysis.systems, warnings: index.warnings };
 }
 
-function indexProgram(program: Program, source: string): ProgramIndex {
-  const adapters = new Set<string>();
-  const plugins = new Set<string>();
-  for (const statement of program.statements) {
-    if (statement.kind !== 'import' || statement.source.kind !== 'builtin') continue;
-    for (const imported of statement.names) {
-      const local = imported.alias ?? imported.name;
-      if (statement.source.namespace === 'adapters') adapters.add(local);
-      if (statement.source.namespace === 'plugins') plugins.add(local);
-    }
-  }
-  const constructs: Array<{ binding: string; adapter: string }> = [];
+function indexProgram(input: LowerInput): ProgramIndex {
   const index: ProgramIndex = {
-    source: source.split('\n'),
-    systems: new Map(),
-    instances: new Map(),
+    source: input.source.split('\n'),
+    languageVersion: input.languageVersion,
+    analysis: input.analysis,
     functions: new Map(),
-    plugins,
     fileScope: new Map(),
     processIds: new Map(),
     calledQueue: [],
     warnings: [],
   };
-  for (const statement of program.statements) {
+  for (const statement of input.program.statements) {
     if (statement.kind === 'movement') {
       index.functions.set(statement.name, statement);
       index.processIds.set(statement.name, `Process_${slug(statement.name)}`);
-    } else if (statement.kind === 'assign' && statement.value.kind === 'construct') {
-      const callee = statement.value.construct.callee;
-      if (adapters.has(callee)) constructs.push({ binding: statement.name, adapter: callee });
-      else index.instances.set(statement.name, callee);
     } else if (statement.kind === 'assign' && statement.value.kind === 'closure') {
       index.fileScope.set(statement.name, { closure: statement.value.closure });
-    } else if (statement.kind === 'assign') {
+    } else if (statement.kind === 'assign' && statement.value.kind !== 'construct') {
       index.fileScope.set(statement.name, { folded: sourceOf(index, statement.span) });
     }
-  }
-  const perAdapter = new Map<string, number>();
-  for (const { adapter } of constructs) perAdapter.set(adapter, (perAdapter.get(adapter) ?? 0) + 1);
-  for (const { binding, adapter } of constructs) {
-    const name = ADAPTER_NAMES[adapter] ?? capitalise(adapter);
-    const display = (perAdapter.get(adapter) ?? 0) > 1 ? `${name} (${binding})` : name;
-    const system: System = { binding, adapter, display };
-    index.systems.set(binding, system);
-    index.fileScope.set(binding, { system });
   }
   return index;
 }
 
+// ── Starts ──
+
 function startOf(listen: ListenDeclaration, fn: MovementDeclaration, index: ProgramIndex): Start {
-  const config = listen.config.map((arg) => `${arg.name}: ${oneLine(arg.value.raw)}`);
-  const doc = [`listen to ${listen.instance}${config.length > 0 ? ` { ${config.join(', ')} }` : ''} fire ${fn.name}`];
-  if (listen.alias !== undefined) doc.push(`Listen lane: ${listen.alias}`);
-  const system = index.systems.get(listen.instance);
-  const adapter = system?.adapter ?? index.instances.get(listen.instance) ?? listen.instance;
-  if (adapter === 'cron') {
-    const schedule = listen.config.find((arg) => arg.name === 'schedule');
-    const cycle = schedule === undefined ? '' : unquote(schedule.value.raw);
-    return { kind: 'timer', name: `On schedule ${cycle}`, cycle, doc };
+  if (listen.path === undefined) {
+    throw new Error(`line ${listen.span.start.line}: a settings listen reached the renderer; the checker refuses it from 0.13`);
   }
-  if (adapter === 'manual') return { kind: 'none', name: 'Started manually', doc };
-  const event = eventLabelOf(fn, index);
-  const label = event === undefined ? 'event' : event;
-  if (system === undefined) {
-    return { kind: 'message', name: `On ${listen.instance} ${label}`, message: `${listen.instance} ${label}`, doc };
+  const node = index.analysis.node('listen', listen.span);
+  const walk = index.analysis.walkAt(listen.path.span);
+  const edges = walk === undefined ? [] : edgesOf(walk.steps);
+  const result = fn.params[0]?.name;
+  const doc = [sourceOf(index, listen.span), ...(listen.alias === undefined ? [] : [`Listen lane: ${listen.alias}`])];
+  switch (node?.adapterType) {
+    case 'cron': {
+      const schedule = scheduleOf(walk?.steps[0]);
+      const zone = schedule.zone === undefined ? '' : ` (${schedule.zone})`;
+      const name = schedule.cycle === undefined ? 'On schedule' : `On schedule ${schedule.cycle}${zone}`;
+      return { kind: 'timer', name, result, doc, ...(schedule.cycle === undefined ? {} : { cycle: schedule.cycle }) };
+    }
+    case 'manual':
+      return { kind: 'none', name: 'Started manually', result, doc };
+    default: {
+      const system = index.analysis.system(listen.instance);
+      const what = edges.join(' › ');
+      const where = system?.display ?? listen.instance;
+      const touch: Touch | undefined = system === undefined ? undefined : { system, direction: 'read', what };
+      return { kind: 'message', name: `On ${where} ${what}`, result, message: `${where} ${what}`, doc, ...(touch === undefined ? {} : { touch }) };
+    }
   }
-  const name = singular(label).toLowerCase() === system.display.toLowerCase() ? `On new ${label}` : `On ${system.display} ${label}`;
-  return { kind: 'message', name, message: `${system.display} ${label}`, system, doc };
 }
 
-/** The event a fired function's parameter is typed as: `Email` in
- *  `m: <inbox-[:Email]->>`. */
-function eventLabelOf(fn: MovementDeclaration, index: ProgramIndex): string | undefined {
-  const param = fn.params[0];
-  const type = param === undefined ? undefined : typeNameOf(param.type);
-  if (type === undefined) return undefined;
-  if (type.position !== undefined) return type.position;
-  if (type.hopsRaw === undefined) return undefined;
-  const walk = walkOfHead({ root: { kind: 'name', name: type.graph }, hopsRaw: type.hopsRaw, span: type.span }, warner(index));
-  return walk.labels.at(-1);
+/** A cron listen's schedule and zone, read from its hop's WHERE
+ *  (`cron-[t:Ticks WHERE t.Schedule == "0 9 * * 1"]->`): each is an equality
+ *  of the hop's field to a literal, alone or among others joined by `and`. */
+function scheduleOf(step: StoryWalk['steps'][number] | undefined): { cycle?: string; zone?: string } {
+  if (step?.type !== 'edge' || step.expressionFilter === undefined) return {};
+  const equalities = new Map<string, string>();
+  const visit = (expr: Expression): void => {
+    if (expr.type === 'logical' && expr.op === 'and') expr.operands.forEach(visit);
+    if (expr.type !== 'compare' || expr.op !== 'eq') return;
+    equality(expr.left, expr.right);
+    equality(expr.right, expr.left);
+  };
+  const equality = (field: Expression, value: Expression): void => {
+    if ((field.type === 'edge_property' || field.type === 'property') && value.type === 'static' && typeof value.value === 'string') {
+      equalities.set(field.propertyTypeId, value.value);
+    }
+  };
+  visit(step.expressionFilter);
+  const cycle = equalities.get('Schedule');
+  const zone = equalities.get('Zone');
+  return { ...(cycle === undefined ? {} : { cycle }), ...(zone === undefined ? {} : { zone }) };
 }
 
-function lowerFunction(fn: MovementDeclaration, starts: Start[], index: ProgramIndex, options: LowerOptions): ProcessFlow {
-  const scope = new Map(index.fileScope);
-  for (const param of fn.params) {
-    const type = typeNameOf(param.type);
-    const system = type === undefined ? undefined : index.systems.get(type.graph);
-    const label = type === undefined ? undefined : (type.position ?? labelOfType(type.graph, type.hopsRaw, type.span, index));
-    scope.set(param.name, { system, label });
-  }
-  const handlers: Handler[] = [];
-  const ctx: Context = { index, scope, returns: 'none', handlers };
+function lowerFunction(fn: MovementDeclaration, starts: Start[], index: ProgramIndex, fileName: string | undefined): ProcessFlow {
+  const ctx: Context = { index, scope: new Map(index.fileScope), returns: 'none' };
   const flow = closed(lowerBody(fn.body, ctx), 'Done');
   const touched = new Set<string>();
-  collectSystems(flow, handlers, touched);
-  for (const start of starts) if (start.kind === 'message' && start.system !== undefined) touched.add(start.system.display);
+  collectSystems(flow, touched);
+  for (const start of starts) if (start.kind === 'message' && start.touch !== undefined) touched.add(start.touch.system.display);
   const doc = [
-    `Function \`${fn.name}\`${options.fileName === undefined ? '' : ` in ${options.fileName}`}, drawn by listen-fire-bpmn from the parsed program.`,
+    `Function \`${fn.name}\`${fileName === undefined ? '' : ` in ${fileName}`}, drawn by @listen-fire/bpmn from the checked program.`,
     touched.size > 0 ? `Connected systems it touches: ${[...touched].join(', ')}.` : 'It touches no connected system.',
     'Queries are carried as text, types are dropped, and expressions are folded into the steps that use them; the program is the authority.',
   ];
-  const id = index.processIds.get(fn.name) ?? `Process_${slug(fn.name)}`;
-  return { id, name: fn.name, doc, starts, body: { flow, handlers } };
+  return { id: index.processIds.get(fn.name) ?? `Process_${slug(fn.name)}`, name: fn.name, doc, starts, flow };
 }
 
-function labelOfType(graph: string, hopsRaw: string | undefined, span: Span, index: ProgramIndex): string | undefined {
-  if (hopsRaw === undefined) return undefined;
-  return walkOfHead({ root: { kind: 'name', name: graph }, hopsRaw, span }, warner(index)).labels.at(-1);
-}
-
-function collectSystems(flow: Flow, handlers: Handler[], into: Set<string>): void {
-  const visitFlow = (steps: Flow): void => {
-    for (const step of steps) {
-      switch (step.kind) {
-        case 'task':
-        case 'wait':
-          for (const touch of step.touches) into.add(touch.system.display);
-          break;
-        case 'scope':
-          for (const touch of step.touches) into.add(touch.system.display);
-          collectSystems(step.body.flow, step.body.handlers, into);
-          break;
-        case 'choice':
-          for (const arm of step.arms) visitFlow(arm.flow);
-          if (step.otherwise !== undefined) visitFlow(step.otherwise);
-          break;
-        case 'all':
-          for (const arm of step.arms) visitFlow(arm);
-          break;
-        case 'firstEvent':
-          for (const arm of step.arms) for (const touch of arm.wait.touches) into.add(touch.system.display);
-          break;
-        case 'end':
-          break;
-        default:
-          unreachable(step);
-      }
+function collectSystems(flow: Flow, into: Set<string>): void {
+  for (const step of flow) {
+    switch (step.kind) {
+      case 'task':
+      case 'wait':
+        for (const touch of step.touches) into.add(touch.system.display);
+        break;
+      case 'scope':
+        for (const touch of step.touches) into.add(touch.system.display);
+        collectSystems(step.flow, into);
+        break;
+      case 'choice':
+        for (const arm of step.arms) collectSystems(arm.flow, into);
+        if (step.otherwise !== undefined) collectSystems(step.otherwise, into);
+        break;
+      case 'all':
+        for (const arm of step.arms) collectSystems(arm, into);
+        break;
+      case 'firstEvent':
+        for (const arm of step.arms) for (const touch of arm.wait.touches) into.add(touch.system.display);
+        break;
+      case 'end':
+        break;
+      default:
+        unreachable(step);
     }
-  };
-  visitFlow(flow);
-  for (const handler of handlers) collectSystems(handler.body.flow, handler.body.handlers, into);
+  }
 }
 
 // ── Bodies and statements ──
@@ -297,9 +250,7 @@ function lowerBody(statements: Statement[], ctx: Context): Flow {
     if (flowEnds(flow)) {
       const rest = statements.slice(position).filter((s) => !isDeclaration(s));
       if (rest.length > 0) {
-        ctx.index.warnings.push(
-          `line ${statement.span.start.line}: ${rest.length} statement(s) after a path that always ends are unreachable; not drawn`,
-        );
+        ctx.index.warnings.push(`line ${statement.span.start.line}: ${rest.length} statement(s) after a path that always ends are unreachable; not drawn`);
       }
       break;
     }
@@ -324,9 +275,9 @@ function lowerStatement(statement: Statement, ctx: Context): Step[] {
     case 'assign':
       return lowerValue(statement.value, statement.name, statement.span, ctx);
     case 'write':
-      return lowerWrite(statement.write, undefined, statement.span, ctx);
+      return lowerWrite(statement.write, undefined, ctx);
     case 'match':
-      return lowerMatch(statement.match, undefined, statement.span, ctx);
+      return lowerMatch(statement.match, undefined, ctx);
     case 'call':
       return lowerCall(statement, undefined, statement.span, ctx);
     case 'block':
@@ -338,11 +289,11 @@ function lowerStatement(statement: Statement, ctx: Context): Step[] {
     case 'delete':
       return [recordTask(ctx, statement.span, { verb: 'Delete', name: statement.name, direction: 'write' })];
     case 'refresh':
-      return [recordTask(ctx, statement.span, { verb: 'Re-read', name: statement.name, direction: 'read' })];
+      return [recordTask(ctx, statement.span, { verb: 'Refresh', name: statement.name, direction: 'read' })];
     case 'if':
       return lowerIf(statement, ctx);
     case 'await':
-      return lowerAwait(statement.await, undefined, statement.span, ctx);
+      return lowerAwait(statement.await, undefined, ctx);
     case 'combinator':
       return lowerCombinator(statement.combinator, undefined, statement.span, ctx);
     case 'collection':
@@ -350,9 +301,9 @@ function lowerStatement(statement: Statement, ctx: Context): Step[] {
     case 'return':
       return lowerReturn(statement.value, statement.span, ctx);
     case 'error': {
-      const before = effectsOf(factsOf(statement.message, ctx), ctx, { purpose: 'the failure message' });
-      const message = unquote(statement.message.raw);
-      const end: EndStep = { kind: 'end', end: 'error', name: `Fail: ${message}`, doc: [sourceOf(ctx.index, statement.span)] };
+      const before = effectsOf([statement.message], ctx, {});
+      const message = templateLabel(statement.message, ctx.index.languageVersion);
+      const end: EndStep = { kind: 'end', end: 'error', name: `Fail: ${message}`, error: message, doc: [sourceOf(ctx.index, statement.span)] };
       return [...before, end];
     }
     default:
@@ -363,42 +314,41 @@ function lowerStatement(statement: Statement, ctx: Context): Step[] {
 /** A right-hand side, bound to `binding` when there is one. */
 function lowerValue(value: RValue, binding: string | undefined, span: Span, ctx: Context): Step[] {
   switch (value.kind) {
-    case 'construct': {
-      const call = constructionAsCall(value.construct);
-      return lowerCall(call, binding, span, ctx);
-    }
+    case 'construct':
+      return lowerCall(constructionAsCall(value.construct), binding, span, ctx);
     case 'call':
       return lowerCall(value.call, binding, span, ctx);
     case 'write':
-      return lowerWrite(value.write, binding, span, ctx);
+      return lowerWrite(value.write, binding, ctx);
     case 'match':
-      return lowerMatch(value.match, binding, span, ctx);
+      return lowerMatch(value.match, binding, ctx);
     case 'link':
       return lowerLink(value.link, binding, span, ctx);
     case 'extract':
-      return lowerExtract(value.extract, binding, span, ctx);
+      return lowerExtract(value.extract, binding, ctx);
     case 'extractCall':
-      return lowerExtractCall(value.extractCall, binding, span, ctx);
+      return lowerExtractCall(value.extractCall, binding, ctx);
     case 'block':
       return lowerBlock(value.block, binding, ctx);
     case 'await':
-      return lowerAwait(value.await, binding, span, ctx);
+      return lowerAwait(value.await, binding, ctx);
     case 'combinator':
       return lowerCombinator(value.combinator, binding, span, ctx);
     case 'collection':
       return lowerCollection(value.collection, binding, span, ctx);
-    case 'callback':
-      return lowerCallback(value.callback, binding, span, ctx);
     case 'closure':
       if (binding !== undefined) ctx.scope.set(binding, { closure: value.closure });
       return [];
     case 'members':
     case 'node':
-    case 'lazy':
-      fold(binding, span, {}, ctx);
+      fold(binding, span, ctx);
       return [];
     case 'inlineBlock':
       return [unmapped('inline block (a retired form)', span, ctx)];
+    case 'callback':
+      throw new Error(`line ${span.start.line}: callback(…) reached the renderer; the checker refuses it from 0.13`);
+    case 'lazy':
+      throw new Error(`line ${span.start.line}: lazy reached the renderer; the checker refuses it from 0.14`);
     case 'expr':
       return lowerExpression(value.expr, binding, span, ctx);
     default:
@@ -407,84 +357,70 @@ function lowerValue(value: RValue, binding: string | undefined, span: Span, ctx:
 }
 
 function lowerExpression(slot: ExprSlot, binding: string | undefined, span: Span, ctx: Context): Step[] {
-  const facts = factsOf(slot, ctx);
-  const steps = effectsOf(facts, ctx, { binding, statement: sourceOf(ctx.index, span), purpose: binding });
-  const provenance = provenanceOf(facts, ctx);
-  if (steps.length === 0) fold(binding, span, provenance, ctx);
-  else if (binding !== undefined) ctx.scope.set(binding, provenance);
+  const steps = effectsOf([slot], ctx, { statement: sourceOf(ctx.index, span), result: binding });
+  if (steps.length === 0) fold(binding, span, ctx);
   return steps;
 }
 
-function fold(binding: string | undefined, span: Span, provenance: Binding, ctx: Context): void {
-  if (binding === undefined) return;
-  ctx.scope.set(binding, { ...provenance, folded: sourceOf(ctx.index, span) });
+function fold(binding: string | undefined, span: Span, ctx: Context): void {
+  if (binding !== undefined) ctx.scope.set(binding, { folded: sourceOf(ctx.index, span) });
 }
 
-/** Where a value's records come from: the first walk's system and edge, or
- *  the first name read that has a known origin. */
-function provenanceOf(facts: ExpressionFacts, ctx: Context): Binding {
-  for (const walk of facts.walks) {
-    const root = walk.root === undefined ? undefined : ctx.scope.get(walk.root);
-    if (root?.system !== undefined || walk.labels.length > 0) {
-      return { system: root?.system, label: walk.labels.at(-1) ?? root?.label };
-    }
-  }
-  for (const name of facts.names) {
-    const known = ctx.scope.get(name);
-    if (known?.system !== undefined) return { system: known.system, label: known.label };
-  }
-  return {};
-}
-
-interface EffectPurpose {
-  binding?: string;
-  /** The statement's source, for a read that IS the statement. */
+interface EffectOptions {
+  /** The statement's source, for a step that IS the statement. */
   statement?: string;
-  /** What an `ai(…)` call computes, for its task's name. */
-  purpose?: string;
+  /** The name the statement binds: the last read or AI step produces it. */
+  result?: string;
 }
 
-/** The steps an expression's evaluation draws: a read of each connected
- *  system it walks, a model call per `ai(…)`, and an unmapped marker per
- *  function body written inside it. */
-function effectsOf(facts: ExpressionFacts, ctx: Context, purpose: EffectPurpose): Step[] {
-  const steps: Step[] = [];
-  const reads = facts.walks.flatMap((walk) => {
-    const system = walk.root === undefined ? undefined : ctx.scope.get(walk.root)?.system;
-    return system === undefined ? [] : [{ walk, system }];
-  });
+/** The steps evaluating `slots` draws: one read of the connected systems
+ *  their walks reach, a model call per `ai(…)`, and an unmapped marker per
+ *  function body written inside them. */
+function effectsOf(slots: ExprSlot[], ctx: Context, options: EffectOptions): TaskStep[] {
+  const facts = factsOfSlots(slots, ctx);
+  const steps: TaskStep[] = [];
+  const reads = ctx.index.analysis.readsWithin(slots.map((slot) => slot.span));
   if (reads.length > 0) {
-    const bySystem = new Map<string, string[]>();
-    for (const { walk, system } of reads) {
-      const labels = bySystem.get(system.display) ?? [];
-      labels.push(walk.labels.join(' → '));
-      bySystem.set(system.display, labels);
-    }
-    const parts = [...bySystem].map(([display, labels]) => `${display} ${joinWords(unique(labels.filter((label) => label !== '')))}`.trim());
-    const doc = purpose.statement !== undefined ? [purpose.statement] : reads.map(({ walk }) => walk.text);
-    steps.push({
-      kind: 'task',
-      task: 'service',
-      name: `Read ${joinWords(parts)}`,
-      doc: [...doc, ...usesOf(facts, ctx)],
-      touches: uniqueTouches(reads.map(({ system }) => ({ system, direction: 'read' }))),
-    });
+    const doc = options.statement !== undefined ? [options.statement] : slots.map((slot) => oneLine(slot.raw));
+    steps.push(readTask(reads, [...doc, ...usesOf(facts, ctx)]));
   }
-  for (const prompt of facts.aiCalls) {
+  for (const prompt of facts.aiPrompts) {
     steps.push({
       kind: 'task',
       task: 'service',
-      ai: true,
-      name: `Generate ${purpose.purpose ?? 'value'} (AI)`,
-      doc: [`AI step: ${prompt}`, ...(purpose.statement === undefined ? [] : [purpose.statement])],
+      look: 'ai',
+      name: `AI: ${shorten(prompt, 60)}`,
+      doc: [`AI step: ${prompt}`, ...(options.statement === undefined ? [] : [options.statement])],
       touches: [],
     });
   }
+  const producer = steps.at(-1);
+  if (producer !== undefined && options.result !== undefined) producer.result = options.result;
   for (const closure of facts.blockClosures) {
-    ctx.index.warnings.push(`a function body written inside an expression is not drawn: ${oneLine(closure).slice(0, 80)}`);
-    steps.push({ kind: 'task', task: 'unmapped', name: 'Unmapped: function inside an expression', doc: [closure], touches: [] });
+    ctx.index.warnings.push(`a function body written inside an expression is not drawn: ${shorten(oneLine(closure), 80)}`);
+    steps.push({ kind: 'task', task: 'unmapped', look: 'plain', name: 'Unmapped: function inside an expression', doc: [closure], touches: [] });
   }
   return steps;
+}
+
+/** One task reading every system `reads` reach: "Read Attio People". */
+function readTask(reads: Read[], doc: string[]): TaskStep {
+  const bySystem = new Map<string, { system: System; paths: string[] }>();
+  for (const read of reads) {
+    const entry = bySystem.get(read.system.binding) ?? { system: read.system, paths: [] };
+    const path = read.edges.join(' › ');
+    if (!entry.paths.includes(path)) entry.paths.push(path);
+    bySystem.set(read.system.binding, entry);
+  }
+  const systems = [...bySystem.values()];
+  return {
+    kind: 'task',
+    task: 'service',
+    look: 'read',
+    name: `Read ${joinWords(systems.map(({ system, paths }) => `${system.display} ${joinWords(paths)}`))}`,
+    doc,
+    touches: systems.map(({ system, paths }) => ({ system, direction: 'read', what: joinWords(paths) })),
+  };
 }
 
 /** The folded assignments a step reads, shown in its documentation. */
@@ -497,236 +433,197 @@ function usesOf(facts: ExpressionFacts, ctx: Context): string[] {
   return lines;
 }
 
-function factsOf(slot: ExprSlot | undefined, ctx: Context): ExpressionFacts {
-  return slot === undefined ? emptyFacts() : factsOfSlot(slot, warner(ctx.index));
+function factsOfSlots(slots: ExprSlot[], ctx: Context): ExpressionFacts {
+  const facts = emptyFacts();
+  for (const slot of slots) mergeFacts(facts, factsOfSlot(slot, ctx.index.languageVersion, warner(ctx.index)));
+  return facts;
 }
 
 // ── Writes and other record operations ──
 
-function lowerWrite(write: WriteExpression, binding: string | undefined, span: Span, ctx: Context): Step[] {
-  const before: Step[] = [];
-  const facts = emptyFacts();
-  for (const field of write.fields) {
-    const fieldFacts = factsOf(field.value, ctx);
-    before.push(...effectsOf({ ...fieldFacts, walks: fieldFacts.walks }, ctx, { purpose: field.name }));
-    mergeFacts(facts, fieldFacts);
-  }
-  for (const clause of write.uniqueBy) mergeFacts(facts, factsOf(clause.predicate, ctx));
-
-  const target = write.target;
-  let system: System | undefined;
-  let edge: string | undefined;
-  let recordLabel: string | undefined;
-  let fromSystemItself = false;
-  switch (target.kind) {
-    case 'linked':
-    case 'tuple': {
-      const head = target.kind === 'linked' ? target.path : target.paths[0];
-      const walk = head === undefined ? undefined : walkOfHead(head, warner(ctx.index));
-      const root = walk?.root === undefined ? undefined : ctx.scope.get(walk.root);
-      system = root?.system;
-      fromSystemItself = walk?.root !== undefined && ctx.index.systems.has(walk.root);
-      recordLabel = root?.label;
-      edge = target.explicitType ?? walk?.labels.at(-1);
-      break;
-    }
-    case 'position': {
-      const name = target.root.kind === 'name' ? target.root.name : undefined;
-      const root = name === undefined ? undefined : ctx.scope.get(name);
-      system = root?.system;
-      recordLabel = root?.label;
-      break;
-    }
-    default:
-      unreachable(target);
-  }
-
-  const doc = [sourceOf(ctx.index, span), ...usesOf(facts, ctx)];
-  const touches: Touch[] = system === undefined ? [] : [{ system, direction: 'write' }];
-  let task: TaskStep;
+function lowerWrite(write: WriteExpression, binding: string | undefined, ctx: Context): Step[] {
+  const slots = write.fields.map((field) => field.value);
+  const before = effectsOf(slots, ctx, {});
+  const recorded = ctx.index.analysis.write(write.span);
+  const system = recorded?.target === undefined ? undefined : ctx.index.analysis.system(recorded.target.instance);
+  const edge = recorded?.parents.at(-1)?.edge;
+  const record = recorded?.target?.recordType;
+  const doc = [sourceOf(ctx.index, write.span), ...usesOf(factsOfSlots(slots, ctx), ctx)];
+  const what = edge ?? record ?? 'records';
+  const touches: Touch[] = system === undefined ? [] : [{ system, direction: 'write', what }];
+  const result = binding === undefined ? {} : { result: binding };
   if (system?.adapter === 'ask') {
-    const promptField = write.fields.find((field) => field.name.toLowerCase() === 'prompt');
-    const prompt = promptField === undefined ? edge ?? 'a person' : unquote(promptField.value.raw);
-    task = { kind: 'task', task: 'user', name: `Ask: ${prompt}`, doc, touches };
-    if (binding !== undefined) ctx.scope.set(binding, { system, label: edge, role: 'ask', prompt });
-    return [...before, task];
+    const prompt = write.fields.find((field) => field.name === 'Prompt');
+    const asked = prompt === undefined ? what : templateLabel(prompt.value, ctx.index.languageVersion);
+    return [...before, { kind: 'task', task: 'user', look: 'write', name: `Ask: ${shorten(asked, 80)}`, ...result, doc, touches }];
   }
   const where = system === undefined ? '' : `${system.display} `;
-  if (target.kind !== 'position' && edge !== undefined && MESSAGE_EDGE.test(edge)) {
-    const name =
-      fromSystemItself || recordLabel === undefined
-        ? `Send ${where}${singular(edge).toLowerCase()}`
-        : `Post to ${where}${singular(recordLabel).toLowerCase()}`;
-    task = { kind: 'task', task: 'send', name, doc, touches };
-  } else if (target.kind === 'position') {
-    const subject = recordLabel === undefined ? nameOfRoot(target.root) : singular(recordLabel);
-    task = { kind: 'task', task: 'service', name: `Update ${where}${subject}`, doc, touches };
-  } else {
-    task = { kind: 'task', task: 'service', name: `Write ${where}${edge ?? 'record'}`, doc, touches };
-  }
-  if (binding !== undefined) ctx.scope.set(binding, { system, label: edge ?? recordLabel });
-  return [...before, task];
+  const name = recorded?.action === 'update' ? `Update ${where}${record ?? nameOfTarget(write)}` : `Write ${where}${what}`;
+  // A write onto records this run built reaches no system.
+  const look = system === undefined ? 'plain' : 'write';
+  return [...before, { kind: 'task', task: 'service', look, name, ...result, doc, touches }];
 }
 
-function nameOfRoot(root: { kind: 'name'; name: string } | { kind: 'expression'; expr: ExprSlot }): string {
-  return root.kind === 'name' ? root.name : oneLine(root.expr.raw);
+function nameOfTarget(write: WriteExpression): string {
+  const target = write.target;
+  if (target.kind !== 'position') return 'record';
+  return target.root.kind === 'name' ? target.root.name : oneLine(target.root.expr.raw);
 }
 
-function lowerMatch(match: MatchExpression, binding: string | undefined, span: Span, ctx: Context): Step[] {
-  const head = match.target.kind === 'linked' ? match.target.path : match.target.paths[0];
-  const walk = head === undefined ? undefined : walkOfHead(head, warner(ctx.index));
-  const system = walk?.root === undefined ? undefined : ctx.scope.get(walk.root)?.system;
-  const label = match.target.explicitType ?? walk?.labels.at(-1) ?? 'record';
-  if (binding !== undefined) ctx.scope.set(binding, { system, label });
+function lowerMatch(match: MatchExpression, binding: string | undefined, ctx: Context): Step[] {
+  const recorded = ctx.index.analysis.write(match.span);
+  const system = recorded?.target === undefined ? undefined : ctx.index.analysis.system(recorded.target.instance);
+  const what = recorded?.target?.recordType ?? recorded?.parents.at(-1)?.edge ?? 'record';
   const unique = match.uniqueBy.map((clause) => `unique by ${oneLine(clause.predicate.raw)}`);
   return [
     {
       kind: 'task',
       task: 'service',
-      name: `Find ${system === undefined ? '' : `${system.display} `}${singular(label)}`,
-      doc: [sourceOf(ctx.index, span), ...unique],
-      touches: system === undefined ? [] : [{ system, direction: 'read' }],
+      look: 'read',
+      name: `Find ${system === undefined ? '' : `${system.display} `}${what}`,
+      ...(binding === undefined ? {} : { result: binding }),
+      doc: [sourceOf(ctx.index, match.span), ...unique],
+      touches: system === undefined ? [] : [{ system, direction: 'read', what }],
     },
   ];
 }
 
 function lowerLink(link: LinkExpression, binding: string | undefined, span: Span, ctx: Context): Step[] {
-  const from = ctx.scope.get(link.from);
-  const system = from?.system;
-  if (binding !== undefined) ctx.scope.set(binding, { system, label: link.edge });
-  return [
-    {
-      kind: 'task',
-      task: 'service',
-      name: `Link ${system === undefined ? '' : `${system.display} `}${link.edge}`,
-      doc: [sourceOf(ctx.index, span)],
-      touches: system === undefined ? [] : [{ system, direction: 'write' }],
-    },
-  ];
+  return [recordTask(ctx, span, { verb: 'Link', name: link.from, edge: link.edge, direction: 'write', result: binding })];
 }
 
+/** A step on a record the run holds: its system is where the analysis says
+ *  that record lives. */
 function recordTask(
   ctx: Context,
   span: Span,
-  op: { verb: string; name: string; edge?: string; direction: Touch['direction'] },
+  op: { verb: string; name: string; edge?: string; direction: Touch['direction']; result?: string },
 ): TaskStep {
-  const record = ctx.scope.get(op.name);
-  const system = record?.system;
-  const subject = op.edge ?? (record?.label === undefined ? op.name : singular(record.label));
+  const address = ctx.index.analysis.addressAt(op.name, span);
+  const system = address === undefined ? undefined : ctx.index.analysis.system(address.instance);
+  const what = op.edge ?? address?.position ?? op.name;
   return {
     kind: 'task',
     task: 'service',
-    name: `${op.verb} ${system === undefined ? '' : `${system.display} `}${subject}`,
+    look: system === undefined ? 'plain' : op.direction,
+    name: `${op.verb} ${system === undefined ? '' : `${system.display} `}${what}`,
+    ...(op.result === undefined ? {} : { result: op.result }),
     doc: [sourceOf(ctx.index, span)],
-    touches: system === undefined ? [] : [{ system, direction: op.direction }],
+    touches: system === undefined ? [] : [{ system, direction: op.direction, what }],
   };
 }
 
 // ── Model calls ──
 
-function lowerExtract(extract: ExtractExpression, binding: string | undefined, span: Span, ctx: Context): Step[] {
-  const facts = emptyFacts();
-  for (const slot of extract.from) mergeFacts(facts, factsOf(slot, ctx));
-  const nodes = extract.stages.flatMap((stage) => stage.children.map((child) => child.name));
-  if (binding !== undefined) ctx.scope.set(binding, { label: nodes[0] });
-  const doc = [`AI step${extract.tier === undefined ? '' : `, tier ${extract.tier}`}.`, sourceOf(ctx.index, span)];
+function lowerExtract(extract: ExtractExpression, binding: string | undefined, ctx: Context): Step[] {
+  const analysed = ctx.index.analysis.node('extract', extract.span)?.node;
+  const written = extract.stages.flatMap((stage) => stage.children.map((child) => child.name));
+  const nodes = analysed === undefined ? written : [analysed.name];
+  const doc = [`AI step${extract.tier === undefined ? '' : `, tier ${extract.tier}`}.`, sourceOf(ctx.index, extract.span)];
   return [
-    ...effectsOf({ ...facts, aiCalls: [] }, ctx, {}),
-    { kind: 'task', task: 'service', ai: true, name: `Extract ${nodes.length > 0 ? joinWords(nodes) : 'fields'} (AI)`, doc, touches: [] },
-  ];
-}
-
-function lowerExtractCall(call: ExtractCallExpression, binding: string | undefined, span: Span, ctx: Context): Step[] {
-  const facts = factsOf(call.content, ctx);
-  const shape = (() => {
-    switch (call.shape.kind) {
-      case 'named':
-        return call.shape.name;
-      case 'inline':
-        return call.shape.declaration.name;
-      case 'computed':
-        return oneLine(call.shape.expr.raw);
-      default:
-        return unreachable(call.shape);
-    }
-  })();
-  if (binding !== undefined) ctx.scope.set(binding, { label: shape });
-  const settings = call.config === undefined ? '' : ` Settings: ${oneLine(call.config.raw)}.`;
-  const output = call.finds === 'one' ? `one ${shape} or nothing` : `a list of ${shape}`;
-  const doc = [`AI step. Output: ${output}.${settings}`, sourceOf(ctx.index, span)];
-  return [
-    ...effectsOf(facts, ctx, { purpose: binding }),
+    ...effectsOf(extract.from, ctx, {}).filter((step) => step.look !== 'ai'),
     {
       kind: 'task',
       task: 'service',
-      ai: true,
-      name: `Extract ${call.finds === 'one' ? '' : 'each '}${shape} (AI)`,
+      look: 'ai',
+      name: `Extract ${nodes.length > 0 ? joinWords(nodes) : 'fields'} (AI)`,
+      ...(binding === undefined ? {} : { result: binding }),
       doc,
       touches: [],
     },
   ];
 }
 
+function lowerExtractCall(call: ExtractCallExpression, binding: string | undefined, ctx: Context): Step[] {
+  const analysed = ctx.index.analysis.node('extract', call.span)?.node;
+  const shape = analysed?.name ?? writtenShape(call);
+  const settings = call.config === undefined ? '' : ` Settings: ${oneLine(call.config.raw)}.`;
+  const output = call.finds === 'one' ? `one ${shape} or nothing` : `a list of ${shape}`;
+  return [
+    ...effectsOf([call.content], ctx, {}),
+    {
+      kind: 'task',
+      task: 'service',
+      look: 'ai',
+      name: `Extract ${call.finds === 'one' ? '' : 'each '}${shape} (AI)`,
+      ...(binding === undefined ? {} : { result: binding }),
+      doc: [`AI step. Output: ${output}.${settings}`, sourceOf(ctx.index, call.span)],
+      touches: [],
+    },
+  ];
+}
+
+function writtenShape(call: ExtractCallExpression): string {
+  switch (call.shape.kind) {
+    case 'named':
+      return call.shape.name;
+    case 'inline':
+      return call.shape.declaration.name;
+    case 'computed':
+      return oneLine(call.shape.expr.raw);
+    default:
+      return unreachable(call.shape);
+  }
+}
+
 // ── Calls ──
 
 function lowerCall(call: CallStatement, binding: string | undefined, span: Span, ctx: Context): Step[] {
-  const callee = call.callee;
-  if (COLLECTION_OPS.has(callee.toLowerCase())) {
+  if (COLLECTION_OPS.has(call.callee.toLowerCase())) {
     const collection = collectionOfCall(call);
     if (collection !== undefined) return lowerCollection(collection, binding, span, ctx);
   }
-  const argSteps: Step[] = [];
-  const facts = emptyFacts();
-  const declared = ctx.index.functions.has(callee);
-  const local = ctx.scope.get(callee)?.closure;
-  if (!declared && local === undefined && !ctx.index.plugins.has(callee)) {
+  const callee = ctx.index.analysis.symbol(call.callee, call.span);
+  const local = ctx.scope.get(call.callee)?.closure;
+  const declared = callee?.kind === 'movement' && ctx.index.functions.has(call.callee);
+  const external = callee?.kind === 'fileImport' || callee?.kind === 'plugin';
+  if (!declared && !external && local === undefined) {
     // A built-in (`only`, `count`, `Text.join`): an expression.
     if (call.expression !== undefined) return lowerExpression(call.expression, binding, span, ctx);
+    return [unmapped(`a call of \`${call.callee}\``, span, ctx)];
   }
+  const slots: ExprSlot[] = [];
+  const argSteps: Step[] = [];
   for (const arg of call.args) {
     switch (arg.kind) {
       case 'expr':
-        mergeFacts(facts, factsOf(arg.expr, ctx));
+        slots.push(arg.expr);
         break;
       case 'call':
         argSteps.push(...lowerCall(arg.call, undefined, span, ctx));
         break;
       case 'write':
-        argSteps.push(...lowerWrite(arg.write, undefined, span, ctx));
+        argSteps.push(...lowerWrite(arg.write, undefined, ctx));
         break;
       case 'node':
       case 'type':
         break;
       case 'closure':
-        argSteps.push(unmapped('function passed to a call', arg.span, ctx));
+        argSteps.push(unmapped('function passed to a call', arg.closure.span, ctx));
         break;
       default:
         unreachable(arg);
     }
   }
-  const before = [...effectsOf(facts, ctx, {}), ...argSteps];
-  const doc = [sourceOf(ctx.index, span), ...usesOf(facts, ctx)];
+  const before = [...effectsOf(slots, ctx, {}), ...argSteps];
+  const doc = [sourceOf(ctx.index, span), ...usesOf(factsOfSlots(slots, ctx), ctx)];
+  const result = binding === undefined ? {} : { result: binding };
   if (declared) {
-    ctx.index.calledQueue.push(callee);
-    if (binding !== undefined) ctx.scope.set(binding, {});
-    return [...before, { kind: 'task', task: 'call', name: callee, doc, touches: [], calls: ctx.index.processIds.get(callee) }];
+    ctx.index.calledQueue.push(call.callee);
+    const calls = ctx.index.processIds.get(call.callee);
+    return [...before, { kind: 'task', task: 'call', look: 'plain', name: call.callee, ...result, doc, touches: [], ...(calls === undefined ? {} : { calls }) }];
   }
-  if (local !== undefined) {
-    return [...before, closureScope(callee, local, doc, ctx)];
+  if (local !== undefined) return [...before, closureScope(call.callee, local, doc, ctx)];
+  if (callee?.kind === 'plugin') {
+    return [...before, { kind: 'task', task: 'service', look: 'plain', name: `Run plugin ${call.callee}`, ...result, doc, touches: [] }];
   }
-  if (ctx.index.plugins.has(callee)) {
-    return [...before, { kind: 'task', task: 'service', name: `Run plugin ${callee}`, doc, touches: [] }];
-  }
-  // A positional call with no expression reading and no declaration: a
-  // function imported from another file.
-  return [...before, { kind: 'task', task: 'call', name: callee, doc, touches: [] }];
+  // A function imported from another file: its own diagram draws it.
+  return [...before, { kind: 'task', task: 'call', look: 'plain', name: call.callee, ...result, doc, touches: [] }];
 }
 
 function closureScope(name: string, closure: ClosureExpression, doc: string[], ctx: Context): Step {
-  const handlers: Handler[] = [];
-  const inner: Context = { ...ctx, scope: new Map(ctx.scope), returns: 'none', handlers };
-  const flow = closed(lowerBody(closure.body, inner), 'Done');
-  return { kind: 'scope', name, doc, touches: [], body: { flow, handlers } };
+  const flow = closed(lowerBody(closure.body, { ...ctx, scope: new Map(ctx.scope), returns: 'none' }), 'Done');
+  return { kind: 'scope', name, doc, touches: [], flow };
 }
 
 /** `map(xs, (x) => { … })` written as a call: its source, function and
@@ -738,12 +635,12 @@ function collectionOfCall(call: CallStatement): CollectionOpExpression | undefin
   let fn: ArmExpression | undefined;
   let config: ExprSlot | undefined;
   for (const arg of call.args) {
-    if (arg.kind === 'closure') fn = { kind: 'closure', closure: arg.closure, span: arg.span };
+    if (arg.kind === 'closure') fn = { kind: 'closure', closure: arg.closure, span: arg.closure.span };
     else if (arg.kind === 'expr' && source === undefined) source = arg.expr;
     else if (arg.kind === 'expr' && arg.expr.raw.trim().startsWith('{')) config = arg.expr;
   }
   if (source === undefined || fn === undefined) return undefined;
-  return { op, source, fn, config, span: call.span };
+  return { op, source, fn, ...(config === undefined ? {} : { config }), span: call.span };
 }
 
 function isCollectionOp(op: string): op is CollectionOpExpression['op'] {
@@ -753,27 +650,35 @@ function isCollectionOp(op: string): op is CollectionOpExpression['op'] {
 // ── Collections, traversal blocks ──
 
 function lowerBlock(block: TraversalBlock, binding: string | undefined, ctx: Context): Step[] {
-  const walk = walkOfHead(block.head, warner(ctx.index));
-  const root = walk.root === undefined ? undefined : ctx.scope.get(walk.root);
-  const system = root?.system;
-  const label = walk.labels.at(-1) ?? root?.label ?? 'record';
-  const scope = new Map(ctx.scope);
-  for (const { alias, label: aliasLabel } of walk.aliases) scope.set(alias, { system, label: aliasLabel });
-  const handlers: Handler[] = [];
-  const flow = closed(lowerBody(block.body, { ...ctx, scope, returns: 'none', handlers }), 'Done');
-  if (binding !== undefined) ctx.scope.set(binding, {});
-  const before = walk.root === undefined && block.head.root?.kind === 'expression' ? effectsOf(factsOf(block.head.root.expr, ctx), ctx, {}) : [];
+  const walk = ctx.index.analysis.walkAt(block.head.span);
+  const read = walk === undefined ? undefined : ctx.index.analysis.readOf(walk);
+  const edges = walk === undefined ? [] : edgesOf(walk.steps);
+  const aliases = walk === undefined ? [] : aliasesOf(walk.steps);
+  const head = headText(block);
+  const what = read === undefined ? edges.join(' › ') || head : `${read.system.display} ${read.landing ?? edges.join(' › ')}`;
+  const flow = closed(lowerBody(block.body, { ...ctx, scope: new Map(ctx.scope), returns: 'none' }), 'Done');
+  const before = block.head.root?.kind === 'expression' ? effectsOf([block.head.root.expr], ctx, {}) : [];
   return [
     ...before,
     {
       kind: 'scope',
-      name: `For each ${system === undefined ? '' : `${system.display} `}${singular(label)}`,
-      doc: [`Runs once per record of ${walk.text}`, ...(binding === undefined ? [] : [`Each run's return is collected into ${binding}.`])],
-      touches: system === undefined ? [] : [{ system, direction: 'read' }],
+      name: `For each ${what}`,
+      ...(binding === undefined ? {} : { result: binding }),
+      doc: [
+        `Runs once per record of ${head}${aliases.length > 0 ? `, each held as ${joinWords(aliases)}` : ''}.`,
+        ...(binding === undefined ? [] : [`Each run's return is collected into ${binding}.`]),
+      ],
+      touches: read === undefined ? [] : [{ system: read.system, direction: 'read', what: edges.join(' › ') }],
       repeat: { sequential: true },
-      body: { flow, handlers },
+      flow,
     },
   ];
+}
+
+function headText(block: TraversalBlock): string {
+  const root = block.head.root;
+  if (root === undefined) return block.head.hopsRaw;
+  return oneLine(`${root.kind === 'name' ? root.name : root.expr.raw}${block.head.hopsRaw}`);
 }
 
 interface CollectionSettings {
@@ -782,29 +687,27 @@ interface CollectionSettings {
 }
 
 function lowerCollection(collection: CollectionOpExpression, binding: string | undefined, span: Span, ctx: Context): Step[] {
-  const sourceFacts = factsOf(collection.source, ctx);
-  const before = effectsOf(sourceFacts, ctx, {});
-  const origin = provenanceOf(sourceFacts, ctx);
-  const sourceName = collection.source.raw.trim();
+  const before = effectsOf([collection.source], ctx, {});
+  const sourceName = oneLine(collection.source.raw);
   const settings = settingsOf(collection.config, ctx);
-  const handlers: Handler[] = [];
-  const scope = new Map(ctx.scope);
-  let flow: Flow;
   const fn = collection.fn;
+  let flow: Flow;
+  let member: string | undefined;
   if (fn.kind === 'closure') {
     const param = fn.closure.params[0];
-    if (param !== undefined) scope.set(param.name, { system: origin.system, label: origin.label });
-    flow = lowerBody(fn.closure.body, { ...ctx, scope, returns: 'none', handlers });
+    if (param !== undefined) {
+      const address = ctx.index.analysis.addressAt(param.name, fn.closure.span);
+      const system = address === undefined ? undefined : ctx.index.analysis.system(address.instance);
+      if (system !== undefined) member = `${system.display} ${address?.position ?? sourceName}`;
+    }
+    flow = lowerBody(fn.closure.body, { ...ctx, scope: new Map(ctx.scope), returns: 'none' });
   } else {
-    flow = lowerArmRef(fn.name, fn.span, { ...ctx, scope, handlers });
+    flow = lowerArmRef(fn.name, fn.span, { ...ctx, scope: new Map(ctx.scope) });
   }
-  if (flow.length === 0 && handlers.length === 0) {
-    fold(binding, span, {}, ctx);
+  if (flow.length === 0) {
+    fold(binding, span, ctx);
     return before;
   }
-  if (binding !== undefined) ctx.scope.set(binding, {});
-  const label = origin.label === undefined ? sourceName : singular(origin.label);
-  const what = `${origin.system === undefined ? '' : `${origin.system.display} `}${label}`;
   const verb = collection.op === 'map' ? 'For each' : `${capitalise(collection.op)} each`;
   const notes: string[] = [];
   if (settings.concurrency !== undefined && settings.concurrency > 1) notes.push(`up to ${settings.concurrency} at once`);
@@ -814,18 +717,19 @@ function lowerCollection(collection: CollectionOpExpression, binding: string | u
     settings.concurrency === undefined
       ? 'No concurrency setting: members run one at a time.'
       : `Concurrency limit ${settings.concurrency} (BPMN cannot express the limit; it is noted here).`,
-    ...(settings.onError === undefined ? [] : [`onError: "${settings.onError}" — a failing member is reported and the others carry on.`]),
+    ...(settings.onError === undefined ? [] : [`onError: "${settings.onError}": a failing member is reported and the others carry on.`]),
     sourceOf(ctx.index, span),
   ];
   return [
     ...before,
     {
       kind: 'scope',
-      name: `${verb} ${what}${notes.length > 0 ? ` (${notes.join(', ')})` : ''}`,
+      name: `${verb} ${member ?? sourceName}${notes.length > 0 ? ` (${notes.join(', ')})` : ''}`,
+      ...(binding === undefined ? {} : { result: binding }),
       doc,
       touches: [],
       repeat: { sequential: !(settings.concurrency !== undefined && settings.concurrency > 1) },
-      body: { flow: closed(flow, 'Done'), handlers },
+      flow: closed(flow, 'Done'),
     },
   ];
 }
@@ -835,7 +739,7 @@ function lowerCollection(collection: CollectionOpExpression, binding: string | u
 function settingsOf(slot: ExprSlot | undefined, ctx: Context): CollectionSettings {
   if (slot === undefined) return {};
   try {
-    const tree = treeOfSlot(slot);
+    const tree = treeOfSlot(slot, ctx.index.languageVersion);
     if (tree.kind !== 'map') return {};
     const settings: CollectionSettings = {};
     for (const member of tree.entries) {
@@ -857,24 +761,27 @@ function settingsOf(slot: ExprSlot | undefined, ctx: Context): CollectionSetting
 // ── Branching ──
 
 function lowerIf(statement: IfStatement, ctx: Context): Step[] {
-  const facts = emptyFacts();
-  for (const arm of statement.arms) mergeFacts(facts, factsOf(arm.condition, ctx));
-  const before = effectsOf(facts, ctx, {});
+  const conditions = statement.arms.map((arm) => arm.condition);
+  const before = effectsOf(conditions, ctx, {});
   const branch = (body: Statement[]): Flow => lowerBody(body, { ...ctx, scope: new Map(ctx.scope) });
   return [
     ...before,
     {
       kind: 'choice',
-      arms: statement.arms.map((arm) => ({ condition: oneLine(arm.condition.raw), flow: branch(arm.body) })),
-      otherwise: statement.elseArm === undefined ? undefined : branch(statement.elseArm.body),
-      doc: usesOf(facts, ctx),
+      arms: statement.arms.map((arm) => ({
+        condition: oneLine(arm.condition.raw),
+        label: shorten(conditionLabel(arm.condition, ctx.index.languageVersion), 80),
+        flow: branch(arm.body),
+      })),
+      ...(statement.elseArm === undefined ? {} : { otherwise: branch(statement.elseArm.body) }),
+      doc: usesOf(factsOfSlots(conditions, ctx), ctx),
     },
   ];
 }
 
 function lowerReturn(value: RValue, span: Span, ctx: Context): Step[] {
   const text = value.kind === 'expr' ? oneLine(value.expr.raw) : undefined;
-  const before = value.kind === 'expr' ? effectsOf(factsOf(value.expr, ctx), ctx, { purpose: 'return value' }) : lowerValue(value, undefined, span, ctx);
+  const before = value.kind === 'expr' ? effectsOf([value.expr], ctx, {}) : lowerValue(value, undefined, span, ctx);
   const end: EndStep = {
     kind: 'end',
     end: ctx.returns,
@@ -886,128 +793,88 @@ function lowerReturn(value: RValue, span: Span, ctx: Context): Step[] {
 
 // ── Waits ──
 
-function lowerAwait(expression: AwaitExpression, binding: string | undefined, span: Span, ctx: Context): Step[] {
+function lowerAwait(expression: AwaitExpression, binding: string | undefined, ctx: Context): Step[] {
   const source = expression.source;
-  const doc = [sourceOf(ctx.index, span)];
+  const doc = [sourceOf(ctx.index, expression.span)];
+  const result = binding === undefined ? {} : { result: binding };
   switch (source.kind) {
-    case 'traversal':
-    case 'first':
-      return [waitOnEdge(source.head, binding, doc, ctx)];
+    case 'traversal': {
+      const awaited = ctx.index.analysis.node('await', expression.span)?.source;
+      const walk = ctx.index.analysis.walkAt(source.head.span);
+      const read = walk === undefined ? undefined : ctx.index.analysis.readOf(walk);
+      const edges = walk === undefined ? [] : edgesOf(walk.steps);
+      const root = (awaited?.kind === 'traversal' ? awaited.root : undefined) ?? walk?.root ?? oneLine(source.head.hopsRaw);
+      const edge = (awaited?.kind === 'traversal' ? awaited.edge : undefined) ?? edges.at(-1) ?? 'arrival';
+      const wait: WaitStep = {
+        kind: 'wait',
+        trigger: { kind: 'message', message: `${root} ${edge}` },
+        name: `Wait for ${source.arrivalsOnly === true ? 'new ' : ''}${edge} on ${root}`,
+        ...result,
+        doc,
+        touches: read === undefined ? [] : [{ system: read.system, direction: 'read', what: edge }],
+      };
+      return [wait];
+    }
     case 'sleep':
       return [
         {
           kind: 'wait',
           trigger: { kind: 'timer', isoDuration: isoDuration(source.duration.raw) },
           name: `Wait ${describeDuration(source.duration.raw)}`,
+          ...result,
           doc,
           touches: [],
         },
       ];
     case 'until': {
       const condition = source.condition;
-      let text: string;
-      const facts = emptyFacts();
+      let written: ExprSlot | undefined;
+      let spans: Span[];
       if (condition.kind === 'expr') {
-        text = oneLine(condition.expr.raw);
-        mergeFacts(facts, factsOf(condition.expr, ctx));
+        written = condition.expr;
+        spans = [condition.expr.span];
       } else {
-        const ret = [...condition.closure.body].reverse().find((s) => s.kind === 'return');
-        text = ret?.kind === 'return' && ret.value.kind === 'expr' ? oneLine(ret.value.expr.raw) : 'the condition holds';
-        for (const statement of condition.closure.body) mergeFacts(facts, factsOfStatement(statement, ctx));
+        const last = [...condition.closure.body].reverse().find((s) => s.kind === 'return');
+        written = last?.kind === 'return' && last.value.kind === 'expr' ? last.value.expr : undefined;
+        spans = [condition.closure.span];
       }
+      const text = written === undefined ? 'the condition holds' : oneLine(written.raw);
+      const label = written === undefined ? text : conditionLabel(written, ctx.index.languageVersion);
       const every = source.every === undefined ? 'every 1 hour (the default)' : `every ${describeDuration(source.every.raw)}`;
-      const systems = unique(
-        facts.walks.flatMap((walk) => {
-          const system = walk.root === undefined ? undefined : ctx.scope.get(walk.root)?.system;
-          return system === undefined ? [] : [`${system.display} ${walk.labels.join(' → ')}`];
-        }),
-      );
+      const reads = ctx.index.analysis.readsWithin(spans).map((read) => `${read.system.display} ${read.edges.join(' › ')}`);
       return [
         {
           kind: 'wait',
           trigger: { kind: 'condition', condition: text },
-          name: `Wait until ${shorten(text, 40)}`,
-          doc: [
-            ...doc,
-            `Re-checked ${every}.`,
-            ...(systems.length > 0 ? [`Each check reads ${joinWords(systems)}.`] : []),
-          ],
+          name: `Wait until ${shorten(label, 60)}`,
+          ...result,
+          doc: [...doc, `Re-checked ${every}.`, ...(reads.length > 0 ? [`Each check reads ${joinWords([...new Set(reads)])}.`] : [])],
           touches: [],
         },
       ];
     }
     case 'combinator':
-      return lowerCombinator(source.combinator, binding, span, ctx);
+      return lowerCombinator(source.combinator, binding, expression.span, ctx);
     default:
       return unreachable(source);
   }
 }
 
-function factsOfStatement(statement: Statement, ctx: Context): ExpressionFacts {
-  switch (statement.kind) {
-    case 'assign':
-    case 'return':
-      return statement.value.kind === 'expr'
-        ? factsOf(statement.value.expr, ctx)
-        : statement.value.kind === 'call' && statement.value.call.expression !== undefined
-          ? factsOf(statement.value.call.expression, ctx)
-          : emptyFacts();
-    case 'call':
-      return factsOf(statement.expression, ctx);
-    default:
-      return emptyFacts();
-  }
-}
-
-function waitOnEdge(head: PathHead, binding: string | undefined, doc: string[], ctx: Context): WaitStep {
-  const walk = walkOfHead(head, warner(ctx.index));
-  const rootName = walk.root;
-  const root = rootName === undefined ? undefined : ctx.scope.get(rootName);
-  const edge = walk.labels.at(-1) ?? 'event';
-  if (binding !== undefined) ctx.scope.set(binding, { system: root?.system, label: edge });
-  if (root?.role === 'callback' && rootName !== undefined) {
-    const name = edge === 'Called' ? `Wait for ${rootName} to be called` : `Wait for ${rootName} ${edge}`;
-    return { kind: 'wait', trigger: { kind: 'message', message: `${rootName} ${edge}` }, name, doc, touches: [] };
-  }
-  if (root?.role === 'ask' && root.system !== undefined) {
-    return {
-      kind: 'wait',
-      trigger: { kind: 'message', message: `${rootName ?? 'ask'} ${edge}` },
-      name: `Wait for answer: ${root.prompt ?? rootName}`,
-      doc,
-      touches: [{ system: root.system, direction: 'read' }],
-    };
-  }
-  const where = root?.system === undefined ? (rootName === undefined ? '' : `${rootName} `) : `${root.system.display} `;
-  return {
-    kind: 'wait',
-    trigger: { kind: 'message', message: `${where}${edge}` },
-    name: `Wait for ${where}${singular(edge)}`,
-    doc,
-    touches: root?.system === undefined ? [] : [{ system: root.system, direction: 'read' }],
-  };
-}
-
 // ── race / all ──
 
 function lowerCombinator(combinator: CombinatorExpression, binding: string | undefined, span: Span, ctx: Context): Step[] {
-  if (binding !== undefined) ctx.scope.set(binding, {});
-  if (combinator.arms.kind === 'dynamic') {
-    return [unmapped(`${combinator.kind} over arms built at run time`, span, ctx)];
-  }
+  if (binding !== undefined) ctx.scope.delete(binding);
+  if (combinator.arms.kind === 'dynamic') return [unmapped(`${combinator.kind} over arms built at run time`, span, ctx)];
   const doc = [sourceOf(ctx.index, span)];
   const arms = writtenArms(combinator.arms);
-  const settings = settingsOf(combinator.settings, ctx);
   switch (combinator.kind) {
     case 'race':
       return [lowerRace(arms, doc, ctx)];
     case 'all':
     case 'parallel': {
-      const flows = arms.map((arm, position) => allArm(arm, position, ctx));
-      if (settings.concurrency !== undefined) {
-        doc.push(`Concurrency limit ${settings.concurrency} (BPMN cannot express the limit; it is noted here).`);
-      }
-      return [{ kind: 'all', arms: flows, doc }];
+      const settings = settingsOf(combinator.settings, ctx);
+      if (settings.concurrency !== undefined) doc.push(`Concurrency limit ${settings.concurrency} (BPMN cannot express the limit; it is noted here).`);
+      return [{ kind: 'all', arms: arms.map((arm, position) => allArm(arm, position, ctx)), doc }];
     }
     default:
       return unreachable(combinator.kind);
@@ -1026,7 +893,8 @@ function lowerArmRef(name: string, span: Span, ctx: Context): Flow {
   if (closure !== undefined) return lowerBody(closure.body, { ...ctx, scope: new Map(ctx.scope) });
   if (ctx.index.functions.has(name)) {
     ctx.index.calledQueue.push(name);
-    return [{ kind: 'task', task: 'call', name, doc: [sourceOf(ctx.index, span)], touches: [], calls: ctx.index.processIds.get(name) }];
+    const calls = ctx.index.processIds.get(name);
+    return [{ kind: 'task', task: 'call', look: 'plain', name, doc: [sourceOf(ctx.index, span)], touches: [], ...(calls === undefined ? {} : { calls }) }];
   }
   return [unmapped(`function value \`${name}\``, span, ctx)];
 }
@@ -1035,20 +903,11 @@ function lowerArmRef(name: string, span: Span, ctx: Context): Flow {
  *  ends the arm early, which BPMN can only say inside a subprocess (a bare
  *  end event in a parallel branch would starve the join). */
 function allArm(arm: ArmExpression, position: number, ctx: Context): Flow {
-  const handlers: Handler[] = [];
-  const flow = lowerArm(arm, { ...ctx, returns: 'none', handlers });
+  const flow = lowerArm(arm, { ...ctx, returns: 'none' });
   const last = flow.at(-1);
   if (last?.kind === 'end' && last.end === 'none') flow.pop();
-  if (!containsReturn(flow) && handlers.length === 0) return flow;
-  return [
-    {
-      kind: 'scope',
-      name: `Arm ${position + 1}`,
-      doc: ['An arm of all(…) that can return early.'],
-      touches: [],
-      body: { flow: closed(flow, 'Done'), handlers },
-    },
-  ];
+  if (!containsReturn(flow)) return flow;
+  return [{ kind: 'scope', name: `Arm ${position + 1}`, doc: ['An arm of all(…) that can return early.'], touches: [], flow: closed(flow, 'Done') }];
 }
 
 function containsReturn(flow: Flow): boolean {
@@ -1074,28 +933,17 @@ function containsReturn(flow: Flow): boolean {
 function lowerRace(arms: ArmExpression[], doc: string[], ctx: Context): Step {
   const flows = arms.map((arm) => lowerArm(arm, { ...ctx, returns: 'terminate' }));
   const waits = flows.map(singleWait);
+  const ties = 'Ties: when arms settle in the same moment listen-fire lands every one; BPMN takes one.';
   if (waits.every((wait) => wait !== undefined)) {
-    return {
-      kind: 'firstEvent',
-      arms: waits.flatMap((wait) => (wait === undefined ? [] : [wait])),
-      doc: [...doc, 'Ties: when arms settle in the same moment listen-fire lands every one; BPMN takes one.'],
-    };
+    return { kind: 'firstEvent', arms: waits.flatMap((wait) => (wait === undefined ? [] : [wait])), doc: [...doc, ties] };
   }
-  const handlers: Handler[] = [];
-  const closedArms = flows.map((flow) =>
-    flowEnds(flow) ? flow : [...flow, { kind: 'end' as const, end: 'terminate' as const, name: 'Finished first', doc: [] }],
-  );
+  const closedArms = flows.map((flow): Flow => (flowEnds(flow) ? flow : [...flow, { kind: 'end', end: 'terminate', name: 'Finished first', doc: [] }]));
   return {
     kind: 'scope',
     name: 'Race: first to finish wins',
-    doc: [
-      ...doc,
-      'Every arm starts at once; the first to reach a terminate end event ends the race and stops the rest.',
-      'Ties: when arms settle in the same moment listen-fire lands every one; BPMN takes one.',
-    ],
+    doc: [...doc, 'Every arm starts at once; the first to reach a terminate end event ends the race and stops the rest.', ties],
     touches: [],
-    race: true,
-    body: { flow: [{ kind: 'all', arms: closedArms, doc: [] }], handlers },
+    flow: [{ kind: 'all', arms: closedArms, doc: [] }],
   };
 }
 
@@ -1105,41 +953,9 @@ function singleWait(flow: Flow): { wait: WaitStep; result?: string } | undefined
   if (first?.kind !== 'wait' || rest.length > 0) return undefined;
   if (second === undefined) return { wait: first };
   if (second.kind === 'end' && second.end === 'terminate') {
-    return { wait: first, result: second.name === 'Return' ? undefined : second.name.replace(/^Return /, '') };
+    return second.name === 'Return' ? { wait: first } : { wait: first, result: second.name.replace(/^Return /, '') };
   }
   return undefined;
-}
-
-// ── Callbacks ──
-
-function lowerCallback(callback: CallbackExpression, binding: string | undefined, span: Span, ctx: Context): Step[] {
-  const name = binding ?? 'callback';
-  if (binding !== undefined) ctx.scope.set(binding, { role: 'callback' });
-  const once = callback.config.find((arg) => arg.name === 'once');
-  const repeatable = once !== undefined && once.value.raw.trim() === 'false';
-  const handlers: Handler[] = [];
-  const subject = callback.subject;
-  let flow: Flow;
-  if (subject.kind === 'inline') {
-    const scope = new Map(ctx.scope);
-    for (const param of subject.closure.params) scope.set(param.name, {});
-    flow = lowerBody(subject.closure.body, { ...ctx, scope, returns: 'none', handlers });
-  } else {
-    flow = lowerArmRef(subject.movement, subject.span, { ...ctx, handlers });
-  }
-  ctx.handlers.push({
-    name: `When ${name} is called`,
-    message: `${name} Called`,
-    // A callback firing never ends the run; the main flow is often waiting on it.
-    interrupting: false,
-    doc: [
-      sourceOf(ctx.index, span),
-      repeatable ? 'Repeatable: fires every time it is called.' : 'Fires at most once.',
-      'It shares the run\'s data, as a callback shares the run\'s scope.',
-    ],
-    body: { flow: closed(flow, 'Done'), handlers },
-  });
-  return [];
 }
 
 // ── Helpers ──
@@ -1150,7 +966,7 @@ function closed(flow: Flow, name: string): Flow {
 
 function unmapped(what: string, span: Span, ctx: Context): TaskStep {
   ctx.index.warnings.push(`line ${span.start.line}: no BPMN mapping yet for ${what}; drawn as an "Unmapped" task`);
-  return { kind: 'task', task: 'unmapped', name: `Unmapped: ${what}`, doc: [sourceOf(ctx.index, span)], touches: [] };
+  return { kind: 'task', task: 'unmapped', look: 'plain', name: `Unmapped: ${what}`, doc: [sourceOf(ctx.index, span)], touches: [] };
 }
 
 function warner(index: ProgramIndex): (message: string) => void {
@@ -1160,52 +976,17 @@ function warner(index: ProgramIndex): (message: string) => void {
 /** The source text a span covers. */
 function sourceOf(index: ProgramIndex, span: Span): string {
   const { start, end } = span;
-  if (start.line === end.line) return (index.source[start.line - 1] ?? '').slice(start.col - 1, end.col - 1);
+  if (start.line === end.line) return (index.source[start.line - 1] ?? '').slice(start.col - 1, end.col - 1).trimEnd();
   const lines = [(index.source[start.line - 1] ?? '').slice(start.col - 1)];
   for (let line = start.line + 1; line < end.line; line++) lines.push(index.source[line - 1] ?? '');
   lines.push((index.source[end.line - 1] ?? '').slice(0, end.col - 1));
-  return lines.join('\n');
-}
-
-function uniqueTouches(touches: Touch[]): Touch[] {
-  const seen = new Set<string>();
-  return touches.filter((touch) => {
-    const key = `${touch.system.binding}/${touch.direction}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-function unique(values: string[]): string[] {
-  return [...new Set(values)];
-}
-
-function joinWords(parts: string[]): string {
-  if (parts.length <= 1) return parts.join('');
-  return `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}`;
-}
-
-export function singular(label: string): string {
-  if (/ies$/i.test(label)) return `${label.slice(0, -3)}y`;
-  if (/[^s]s$/i.test(label)) return label.slice(0, -1);
-  return label;
+  return lines.join('\n').trimEnd();
 }
 
 function capitalise(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-function unquote(raw: string): string {
-  const text = raw.trim();
-  return /^(["']).*\1$/s.test(text) ? text.slice(1, -1) : oneLine(text);
-}
-
-function shorten(text: string, length: number): string {
-  return text.length <= length ? text : `${text.slice(0, length - 1)}…`;
-}
-
 function slug(name: string): string {
   return name.replace(/[^A-Za-z0-9_]+/g, '_').replace(/^_+|_+$/g, '') || 'function';
 }
-

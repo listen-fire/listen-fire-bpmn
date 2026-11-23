@@ -1,0 +1,21 @@
+team = connect `@lf/slack` using team_workspace
+
+function `Who Takes It`(go: <manual-[:Invocations]->>) {
+  dealflow = only(team-[ch:Channels WHERE ch.Name == "dealflow"]->)
+  if (dealflow == null) { fail("no #dealflow channel") }
+  msg = write dealflow-[:Messages]-> { Message: "Who can take ${go.Text}? Reply in the thread." }
+
+  r = race(
+    () => {
+      reply = await msg-[:Replies]->
+      return reply.Message
+    },
+    () => { await sleep(1d) },
+  )
+
+  if (r[0] == null) {
+    write dealflow-[:Messages]-> { Message: "Nobody picked up ${go.Text}." }
+  }
+}
+
+listen to manual-[:Invocations]-> fire `Who Takes It`

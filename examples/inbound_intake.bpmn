@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:bioc="http://bpmn.io/schema/bpmn/biocolor/1.0" xmlns:color="http://www.omg.org/spec/BPMN/non-normative/color/1.0" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:lf="https://listen-fire.dev/schema/bpmn" id="Definitions_1" targetNamespace="https://listen-fire.dev/schema/bpmn" exporter="@listen-fire/bpmn" exporterVersion="0.16.0">
+  <bpmn:collaboration id="Collaboration_1">
+    <bpmn:participant id="Participant_1" name="Intake" processRef="Process_Intake" lf:kind="pool" />
+    <bpmn:participant id="Participant_2" name="Email" lf:kind="system">
+      <bpmn:documentation>Connected system: `inbox`, a connection of email. Drawn as a black box.</bpmn:documentation>
+    </bpmn:participant>
+    <bpmn:participant id="Participant_3" name="Attio" lf:kind="system">
+      <bpmn:documentation>Connected system: `crm`, a connection of attio. Drawn as a black box.</bpmn:documentation>
+    </bpmn:participant>
+    <bpmn:messageFlow id="MessageFlow_1" name="reads Emails" sourceRef="Participant_2" targetRef="StartEvent_1" />
+    <bpmn:messageFlow id="MessageFlow_2" name="writes Companies" sourceRef="ServiceTask_2" targetRef="Participant_3" />
+  </bpmn:collaboration>
+  <bpmn:process id="Process_Intake" name="Intake" isExecutable="false">
+    <bpmn:documentation>Function `Intake` in inbound_intake.mvt, drawn by @listen-fire/bpmn from the checked program.
+Connected systems it touches: Attio, Email.
+Queries are carried as text, types are dropped, and expressions are folded into the steps that use them; the program is the authority.</bpmn:documentation>
+    <bpmn:startEvent id="StartEvent_1" name="On Email Emails&#10;→ e" lf:kind="read">
+      <bpmn:documentation>listen to inbox-[e:Emails WHERE e.Key == "intake"]-> fire Intake</bpmn:documentation>
+      <bpmn:outgoing>Flow_1</bpmn:outgoing>
+      <bpmn:messageEventDefinition id="MessageEventDefinition_1" messageRef="Message_1" />
+    </bpmn:startEvent>
+    <bpmn:serviceTask id="ServiceTask_1" name="Extract Company (AI)&#10;→ company" implementation="urn:listen-fire:ai" lf:kind="ai">
+      <bpmn:documentation>AI step. Output: one Company or nothing.
+extractOne([e.Body], Company)</bpmn:documentation>
+      <bpmn:incoming>Flow_1</bpmn:incoming>
+      <bpmn:outgoing>Flow_2</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:sequenceFlow id="Flow_1" sourceRef="StartEvent_1" targetRef="ServiceTask_1" />
+    <bpmn:exclusiveGateway id="ExclusiveGateway_1" default="Flow_4" lf:kind="decision">
+      <bpmn:incoming>Flow_2</bpmn:incoming>
+      <bpmn:outgoing>Flow_3</bpmn:outgoing>
+      <bpmn:outgoing>Flow_4</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:sequenceFlow id="Flow_2" sourceRef="ServiceTask_1" targetRef="ExclusiveGateway_1" />
+    <bpmn:endEvent id="EndEvent_1" name="Fail: no company in ‹e.Subject›" lf:kind="failure">
+      <bpmn:documentation>fail("no company in ${e.Subject}")</bpmn:documentation>
+      <bpmn:incoming>Flow_3</bpmn:incoming>
+      <bpmn:errorEventDefinition id="ErrorEventDefinition_1" errorRef="Error_1" />
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_3" name="no company" sourceRef="ExclusiveGateway_1" targetRef="EndEvent_1">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">company == null</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:serviceTask id="ServiceTask_2" name="Write Attio Companies" lf:kind="write">
+      <bpmn:documentation>write crm-[:Companies]-> {
+    unique by (Name)
+    Name: company.name
+  }</bpmn:documentation>
+      <bpmn:incoming>Flow_4</bpmn:incoming>
+      <bpmn:outgoing>Flow_5</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:sequenceFlow id="Flow_4" sourceRef="ExclusiveGateway_1" targetRef="ServiceTask_2" />
+    <bpmn:endEvent id="EndEvent_2" name="Done" lf:kind="plain">
+      <bpmn:incoming>Flow_5</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_5" sourceRef="ServiceTask_2" targetRef="EndEvent_2" />
+  </bpmn:process>
+  <bpmn:message id="Message_1" name="Email Emails" />
+  <bpmn:error id="Error_1" name="no company in ‹e.Subject›" />
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="Collaboration_1">
+      <bpmndi:BPMNShape id="Participant_1_di" bpmnElement="Participant_1" isHorizontal="true" bioc:stroke="#334155" bioc:fill="#ffffff" color:background-color="#ffffff" color:border-color="#334155">
+        <dc:Bounds x="0" y="0" width="819" height="285" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="StartEvent_1_di" bpmnElement="StartEvent_1" bioc:stroke="#2563eb" bioc:fill="#e8f0fe" color:background-color="#e8f0fe" color:border-color="#2563eb">
+        <dc:Bounds x="94" y="73" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="70" y="40" width="84" height="29" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ServiceTask_1_di" bpmnElement="ServiceTask_1" bioc:stroke="#7c3aed" bioc:fill="#f1eafe" color:background-color="#f1eafe" color:border-color="#7c3aed">
+        <dc:Bounds x="204" y="46" width="100" height="90" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_1_di" bpmnElement="Flow_1" bioc:stroke="#334155" color:border-color="#334155">
+        <di:waypoint x="130" y="91" />
+        <di:waypoint x="204" y="91" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="ExclusiveGateway_1_di" bpmnElement="ExclusiveGateway_1" bioc:stroke="#b45309" bioc:fill="#fff4de" color:background-color="#fff4de" color:border-color="#b45309">
+        <dc:Bounds x="354" y="66" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_2_di" bpmnElement="Flow_2" bioc:stroke="#334155" color:border-color="#334155">
+        <di:waypoint x="304" y="91" />
+        <di:waypoint x="354" y="91" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="EndEvent_1_di" bpmnElement="EndEvent_1" bioc:stroke="#dc2626" bioc:fill="#fdecec" color:background-color="#fdecec" color:border-color="#dc2626">
+        <dc:Bounds x="482" y="176" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="457" y="216" width="86" height="29" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_3_di" bpmnElement="Flow_3" bioc:stroke="#334155" color:border-color="#334155">
+        <di:waypoint x="379" y="116" />
+        <di:waypoint x="379" y="194" />
+        <di:waypoint x="482" y="194" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="385" y="175" width="62" height="16" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="ServiceTask_2_di" bpmnElement="ServiceTask_2" bioc:stroke="#4d7c0f" bioc:fill="#eef5d9" color:background-color="#eef5d9" color:border-color="#4d7c0f">
+        <dc:Bounds x="593" y="51" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_4_di" bpmnElement="Flow_4" bioc:stroke="#334155" color:border-color="#334155">
+        <di:waypoint x="404" y="91" />
+        <di:waypoint x="593" y="91" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="EndEvent_2_di" bpmnElement="EndEvent_2" bioc:stroke="#334155" bioc:fill="#ffffff" color:background-color="#ffffff" color:border-color="#334155">
+        <dc:Bounds x="743" y="73" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="747" y="113" width="29" height="16" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_5_di" bpmnElement="Flow_5" bioc:stroke="#334155" color:border-color="#334155">
+        <di:waypoint x="693" y="91" />
+        <di:waypoint x="743" y="91" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="Participant_2_di" bpmnElement="Participant_2" isHorizontal="true" bioc:stroke="#64748b" bioc:fill="#f1f3f7" color:background-color="#f1f3f7" color:border-color="#64748b">
+        <dc:Bounds x="0" y="325" width="819" height="40" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Participant_3_di" bpmnElement="Participant_3" isHorizontal="true" bioc:stroke="#64748b" bioc:fill="#f1f3f7" color:background-color="#f1f3f7" color:border-color="#64748b">
+        <dc:Bounds x="0" y="391" width="819" height="40" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="MessageFlow_1_di" bpmnElement="MessageFlow_1" bioc:stroke="#64748b" color:border-color="#64748b">
+        <di:waypoint x="112" y="325" />
+        <di:waypoint x="112" y="109" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="117" y="306" width="66" height="16" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MessageFlow_2_di" bpmnElement="MessageFlow_2" bioc:stroke="#64748b" color:border-color="#64748b">
+        <di:waypoint x="643" y="131" />
+        <di:waypoint x="643" y="391" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="648" y="372" width="90" height="16" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

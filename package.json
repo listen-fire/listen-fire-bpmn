@@ -1,9 +1,23 @@
 {
-  "name": "listen-fire-bpmn",
-  "version": "0.1.0",
+  "name": "@listen-fire/bpmn",
+  "version": "0.16.0",
   "private": true,
-  "description": "Render a listen-fire program as a BPMN 2.0 diagram",
+  "description": "Draw a checked listen-fire program as a BPMN 2.0 diagram",
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./viewer": {
+      "types": "./dist/viewer.d.ts",
+      "default": "./dist/viewer.js"
+    },
+    "./viewer.css": "./viewer/lf-bpmn.css",
+    "./package.json": "./package.json"
+  },
   "bin": {
     "listen-fire-bpmn": "dist/cli.js"
   },
@@ -11,11 +25,13 @@
     "node": ">=22.23.4 <23"
   },
   "dependencies": {
-    "@listen-fire/movement-lang": "0.12.13",
+    "@listen-fire/movement-lang": "0.16.1",
     "bpmn-moddle": "10.3.1"
   },
   "devDependencies": {
     "@types/node": "22.15.30",
+    "bpmn-js": "17.11.1",
+    "playwright": "1.64.1",
     "typescript": "5.5.4",
     "vitest": "3.2.4"
   },
@@ -23,9 +39,11 @@
     "build": "tsc -p tsconfig.json",
     "code:type-check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "test": "vitest run",
-    "examples": "vitest run -u"
+    "examples": "vitest run -u",
+    "review": "npm run build && node scripts/review.mjs"
   },
   "files": [
-    "dist"
+    "dist",
+    "viewer"
   ]
 }

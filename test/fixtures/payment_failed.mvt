@@ -1,0 +1,33 @@
+stripe = connect `@lf/stripe` using stripe_account
+crm = connect `@lf/attio` using crm
+mail = connect `@lf/gmail` using billing_mail
+chat = connect `@lf/slack` using team_slack
+
+function `Payment Failed`(c: <stripe-[:InvoiceChange]->>) {
+  invoice = only(c-[:Invoice]->)
+  if (invoice == null) { fail("payment_failed event ${c.Id} has no invoice") }
+  email = invoice.`Customer Email`
+  person = first(crm-[p:People WHERE p.Email == email ORDER BY p.`Created At`]->)
+  if (person == null) { fail("${email} not found in the CRM (invoice ${invoice.Id})") }
+  # written in full ($1,200, not $1.2K)
+  figure = Number.format(invoice.`Amount Due`, "grouped")
+  amount = invoice.Currency == "usd" ? "$${figure}" : "${figure} ${Text.upper(invoice.Currency)}"
+
+  if (person.Plan == "monthly") {
+    write mail-[:Messages]-> {
+      To: [email]
+      Subject: "Your Ledgerline payment didn't go through"
+      Body: "Hi ${coalesce(person.Name, invoice.`Customer Name`, "there")},\n\nWe tried to take your Ledgerline payment of ${amount} and it didn't go through. It's usually an expired card or a bank check.\n\nYou can update your card and pay here: ${invoice.`Hosted Invoice URL`}\n\nWe'll try again in a few days. If anything's changed, just reply to this email.\n\nThe Ledgerline team"
+    }
+  } else if (person.Plan == "yearly") {
+    channel = only(chat-[ch:Channels WHERE ch.Name == "accounts"]->)
+    if (channel == null) { fail("#accounts not found") }
+    write channel-[:Messages]-> {
+      Message: "Annual customer payment failed: ${coalesce(person.Name, email)} (${email}), ${amount}. Account manager: ${coalesce(person.`Account manager`, "not assigned")}. Invoice: ${invoice.`Hosted Invoice URL`}"
+    }
+  } else {
+    fail("${email} has no plan in the CRM (invoice ${invoice.Id})")
+  }
+}
+
+listen to stripe-[:Invoices]->-[c:Changes WHERE c.Kind == "payment_failed"]-> fire `Payment Failed`

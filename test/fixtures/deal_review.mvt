@@ -1,0 +1,39 @@
+crm   = connect `@lf/attio` using acme_main
+chat  = connect `@lf/slack` using team_workspace
+
+node Risk: "the risks the company's description names" {
+  summary: <text> "one sentence naming the biggest risk"
+}
+
+function `Notify owners`(name: <text>) {
+  owners = only(chat-[ch:Channels WHERE ch.Name == "portfolio"]->)
+  if (owners == null) { fail("no #portfolio channel") }
+  write owners-[:Messages]-> { Message: "${name} needs a look" }
+}
+
+function `Review deals`(run: <manual-[:Invocations]->>) {
+  companies = crm-[c:Companies WHERE c.Name != ""]->
+
+  map(companies, (c) => {
+    risk = extractOne([c.Description], Risk, { tier: "quick" })
+    headline = ai("a five word headline for ${c.Name}")
+    write c-[:Notes]-> { Title: headline, Content: coalesce(risk?.summary, "") }
+  }, { concurrency: 4, onError: "warn" })
+
+  all(
+    () => { `Notify owners`(run.Text) },
+    () => {
+      ops = only(chat-[ch:Channels WHERE ch.Name == "general"]->)
+      if (ops != null) { write ops-[:Messages]-> { Message: "Deal review started" } }
+    },
+  )
+
+  lead = only(crm-[c:Companies WHERE c.Name == run.Text]->)
+  if (lead == null) { fail("no company named ${run.Text}") }
+  await until(() => {
+    refresh lead
+    return lead.Description != ""
+  }, { every: 1h })
+}
+
+listen to manual-[:Invocations]-> fire `Review deals`

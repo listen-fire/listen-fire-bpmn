@@ -1,0 +1,17 @@
+inbox = connect `@lf/email`
+crm   = connect `@lf/attio` using acme_main
+
+node Company: "the company this email is from" {
+  name: <text> "the company's name"
+}
+
+function Intake(e: <inbox-[:Emails]->>) {
+  company = extractOne([e.Body], Company)
+  if (company == null) { fail("no company in ${e.Subject}") }
+  write crm-[:Companies]-> {
+    unique by (Name)
+    Name: company.name
+  }
+}
+
+listen to inbox-[e:Emails WHERE e.Key == "intake"]-> fire Intake

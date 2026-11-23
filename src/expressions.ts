@@ -1,26 +1,16 @@
-// What a value expression does that the diagram must show: the walks it takes
-// (reads, when they start from a connected system), the model calls in it
-// (`ai(…)`), and the names it reads (so folded assignments can be shown on
-// the task that uses them). Expressions are otherwise folded into the task
-// that holds them.
+// What a value expression holds that the story analysis does not record as a
+// node of its own: the model calls written in it (`ai(…)`), the names it reads
+// (so folded assignments can be shown on the step that uses them), and any
+// function body written inside it. Reads of connected systems come from the
+// analysis (analysis.ts), never from here.
 
-import { probePathHead, treeOfSlot, type ExprSlot, type MExpr, type PathHead } from '@listen-fire/movement-lang';
+import { treeOfSlot, type ExprSlot, type LanguageVersion, type MExpr } from '@listen-fire/movement-lang';
 
-type Hop = Extract<MExpr, { kind: 'path' }>['hops'][number];
-
-/** One walk, as written. `root` is the name it starts from, where it has one. */
-export interface Walk {
-  root?: string;
-  labels: string[];
-  /** Hop aliases, each with its label (`n` in `-[n:Notifications]->`). */
-  aliases: Array<{ alias: string; label: string }>;
-  text: string;
-}
+import { oneLine, templateText } from './labels.js';
 
 export interface ExpressionFacts {
-  walks: Walk[];
-  /** The prompt of each `ai(…)` call, as written. */
-  aiCalls: string[];
+  /** Each `ai(…)` call's prompt, its `${…}` drawn as blanks. */
+  aiPrompts: string[];
   names: Set<string>;
   /** Functions with a statement body written inside an expression
    *  (`[x, ...map(xs, (p) => { … })]`). Their statements are not read here. */
@@ -28,12 +18,11 @@ export interface ExpressionFacts {
 }
 
 export function emptyFacts(): ExpressionFacts {
-  return { walks: [], aiCalls: [], names: new Set(), blockClosures: [] };
+  return { aiPrompts: [], names: new Set(), blockClosures: [] };
 }
 
 export function mergeFacts(into: ExpressionFacts, from: ExpressionFacts): ExpressionFacts {
-  into.walks.push(...from.walks);
-  into.aiCalls.push(...from.aiCalls);
+  into.aiPrompts.push(...from.aiPrompts);
   into.blockClosures.push(...from.blockClosures);
   for (const name of from.names) into.names.add(name);
   return into;
@@ -41,64 +30,17 @@ export function mergeFacts(into: ExpressionFacts, from: ExpressionFacts): Expres
 
 /** Facts of one slot. A slot the expression grammar refuses is reported
  *  through `warn` and contributes nothing. */
-export function factsOfSlot(slot: ExprSlot, warn: (message: string) => void): ExpressionFacts {
+export function factsOfSlot(slot: ExprSlot, languageVersion: LanguageVersion, warn: (message: string) => void): ExpressionFacts {
   let tree: MExpr;
   try {
-    tree = treeOfSlot(slot);
+    tree = treeOfSlot(slot, languageVersion);
   } catch (error) {
-    warn(`could not read the expression \`${oneLine(slot.raw)}\` (${messageOf(error)}); its reads are not drawn`);
+    warn(`could not read the expression \`${oneLine(slot.raw)}\` (${messageOf(error)})`);
     return emptyFacts();
   }
   const facts = emptyFacts();
   visit(tree, slot.raw, facts);
   return facts;
-}
-
-/** The walk a path head takes — a traversal block's, a write's target, an
- *  await's. */
-export function walkOfHead(head: PathHead, warn: (message: string) => void): Walk {
-  const raw = probePathHead(head);
-  const display = head.root === undefined ? head.hopsRaw : spellHead(head);
-  const root = head.root?.kind === 'name' ? head.root.name : undefined;
-  try {
-    const tree = treeOfSlot({ raw, span: head.span });
-    if (tree.kind === 'path') return { root, ...hopsOf(tree.hops), text: display };
-  } catch (error) {
-    warn(`could not read the walk \`${oneLine(display)}\` (${messageOf(error)})`);
-  }
-  return { root, labels: [], aliases: [], text: display };
-}
-
-function spellHead(head: PathHead): string {
-  const root = head.root;
-  if (root === undefined) return head.hopsRaw;
-  return `${root.kind === 'name' ? root.name : root.expr.raw}${head.hopsRaw}`;
-}
-
-function hopsOf(hops: Hop[]): Pick<Walk, 'labels' | 'aliases'> {
-  return {
-    labels: hops.map((hop) => hop.label.text),
-    aliases: hops.flatMap((hop) => (hop.alias === undefined ? [] : [{ alias: hop.alias.text, label: hop.label.text }])),
-  };
-}
-
-function rootName(expr: MExpr | undefined): string | undefined {
-  if (expr === undefined) return undefined;
-  switch (expr.kind) {
-    case 'name':
-      return expr.field === true ? undefined : expr.name.text;
-    case 'member':
-    case 'index':
-      return rootName(expr.object);
-    case 'paren':
-      return rootName(expr.expr);
-    case 'path':
-      return rootName(expr.root);
-    case 'call':
-      return rootName(expr.args[0]?.value);
-    default:
-      return undefined;
-  }
 }
 
 function visit(expr: MExpr, source: string, facts: ExpressionFacts): void {
@@ -135,15 +77,15 @@ function visit(expr: MExpr, source: string, facts: ExpressionFacts): void {
       return;
     case 'call': {
       const callee = expr.callee.kind === 'name' ? expr.callee.name.text : undefined;
-      if (callee !== undefined && callee.toLowerCase() === 'ai') {
-        facts.aiCalls.push(source.slice(expr.at.start, expr.at.end));
+      const prompt = expr.args[0]?.value;
+      if (callee !== undefined && callee.toLowerCase() === 'ai' && prompt !== undefined) {
+        facts.aiPrompts.push(templateText(prompt, source));
       }
       if (callee === undefined) recurse(expr.callee);
       for (const arg of expr.args) recurse(arg.value);
       return;
     }
-    case 'path': {
-      facts.walks.push({ root: rootName(expr.root), ...hopsOf(expr.hops), text: source.slice(expr.at.start, expr.at.end) });
+    case 'path':
       recurse(expr.root);
       for (const hop of expr.hops) {
         recurse(hop.where);
@@ -151,7 +93,6 @@ function visit(expr: MExpr, source: string, facts: ExpressionFacts): void {
         recurse(hop.orderBy?.key);
       }
       return;
-    }
     case 'unary':
       recurse(expr.operand);
       return;
@@ -189,8 +130,7 @@ function visit(expr: MExpr, source: string, facts: ExpressionFacts): void {
       recurse(expr.body);
       return;
     case 'lazy':
-      recurse(expr.walk);
-      return;
+      throw new Error('`lazy` reached the renderer; the checker refuses it from 0.14, so a checked program never holds it');
     default:
       return unhandled(expr);
   }
@@ -198,10 +138,6 @@ function visit(expr: MExpr, source: string, facts: ExpressionFacts): void {
 
 function unhandled(value: never): never {
   throw new Error(`unhandled expression: ${JSON.stringify(value)}`);
-}
-
-export function oneLine(text: string): string {
-  return text.replace(/\s+/g, ' ').trim();
 }
 
 export function messageOf(error: unknown): string {

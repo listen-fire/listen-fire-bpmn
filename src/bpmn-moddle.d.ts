@@ -4,6 +4,8 @@ declare module 'bpmn-moddle' {
   export interface ModdleElement {
     readonly $type: string;
     id?: string;
+    /** Attributes of namespaces the model does not know (`lf:kind`). */
+    $attrs: Record<string, string>;
     $instanceOf(type: string): boolean;
     [property: string]: unknown;
   }

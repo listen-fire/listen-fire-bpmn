@@ -1,0 +1,24 @@
+crm  = connect `@lf/attio` using acme_main
+team = connect `@lf/slack` using team_workspace
+asks = connect `@lf/ask`
+
+function `Approve Batch`(go: <manual-[:Invocations]->>) {
+  q = write asks-[:Check]-> {
+    Prompt: "Add ${go.Text} to the pipeline?"
+  }
+  dealflow = only(team-[ch:Channels WHERE ch.Name == "dealflow"]->)
+  if (dealflow == null) { fail("no #dealflow channel") }
+  write dealflow-[:Messages]-> { Message: "Please decide: ${q.Url}" }
+
+  a = await q-[:Response]->
+  if (a.Answer == true) {
+    write crm-[:Companies]-> {
+      unique by (FUZZY Name)
+      Name: go.Text
+    }
+  } else {
+    write dealflow-[:Messages]-> { Message: "Declined: ${go.Text}" }
+  }
+}
+
+listen to manual-[:Invocations]-> fire `Approve Batch`
