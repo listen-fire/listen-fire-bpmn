@@ -38,6 +38,13 @@ else report(rendering.diagnostics);
   `{ attio: { name: 'Attio', icon: 'https://…/attio.svg' } }`. Without it,
   the first-party modules' names are used. A system with no words is named
   by its adapter.
+  An entry may also carry `eventPhrase`, the module's own wording from its
+  manifest's `vocabulary.eventPhrase`
+  (`{ default: [{ template: 'When an email arrives' }] }`). A listen on that
+  system then starts with that sentence instead of "On Email Emails". The
+  first template whose every `{slot}` has a value wins, as on the hosted
+  platform. A path listen's WHERE fills no slot; only an `address` the host
+  puts in the entry does. If no template renders, the label is the derived one.
 - A program whose check has an error gets `{ ok: false, diagnostics }`, and
   no diagram.
 

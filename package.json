@@ -1,6 +1,6 @@
 {
   "name": "@listen-fire/bpmn",
-  "version": "0.16.0",
+  "version": "0.16.1",
   "description": "Draw a checked listen-fire program as a BPMN 2.0 diagram",
   "license": "Apache-2.0",
   "repository": {

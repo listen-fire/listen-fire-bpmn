@@ -16,7 +16,7 @@ import {
 } from '@listen-fire/movement-lang';
 
 import type { System } from './flow.js';
-import type { Vocabulary } from './vocabulary.js';
+import { resolveEventPhrase, type Vocabulary } from './vocabulary.js';
 
 export type NodeOf<K extends StoryNode['kind']> = Extract<StoryNode, { kind: K }>;
 
@@ -130,7 +130,14 @@ function systemsOf(analysis: StoryAnalysis, vocabulary: Vocabulary): System[] {
     const words = vocabulary[adapter];
     const name = words?.name ?? adapter;
     const display = (perAdapter.get(adapter) ?? 0) > 1 ? `${name} (${binding})` : name;
-    return { binding, adapter, display, ...(words?.icon === undefined ? {} : { icon: words.icon }) };
+    const startPhrase = resolveEventPhrase(words);
+    return {
+      binding,
+      adapter,
+      display,
+      ...(words?.icon === undefined ? {} : { icon: words.icon }),
+      ...(startPhrase === undefined ? {} : { startPhrase }),
+    };
   });
 }
 

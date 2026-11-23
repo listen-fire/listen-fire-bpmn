@@ -210,6 +210,41 @@ describe('the vocabulary', () => {
   });
 });
 
+// The email module's declared wording (modules/email/manifest.ts, vocabulary.eventPhrase).
+const EMAIL_EVENT_PHRASE = {
+  default: [
+    { template: 'When you send an email to {address}' },
+    { template: 'When an email arrives tagged `{key}`' },
+    { template: 'When an email arrives' },
+  ],
+};
+
+describe('the start label from a module\'s event phrase', () => {
+  it('is the first template whose slots fill; a path listen supplies none, so the bare one', async () => {
+    const { reading } = await render('inbound_intake', { vocabulary: { email: { name: 'Email', eventPhrase: EMAIL_EVENT_PHRASE } } });
+    expect(names(reading, 'bpmn:StartEvent')).toEqual(['When an email arrives\n→ e']);
+  });
+
+  it('fills a slot the host supplies', async () => {
+    const { reading } = await render('inbound_intake', {
+      vocabulary: { email: { name: 'Email', eventPhrase: EMAIL_EVENT_PHRASE, address: 'intake@example.com' } },
+    });
+    expect(names(reading, 'bpmn:StartEvent')).toEqual(['When you send an email to intake@example.com\n→ e']);
+  });
+
+  it('falls back to the derived label when no template renders', async () => {
+    const { reading } = await render('inbound_intake', {
+      vocabulary: { email: { name: 'Email', eventPhrase: { default: [{ template: 'When {who} writes' }] } } },
+    });
+    expect(names(reading, 'bpmn:StartEvent')).toEqual(['On Email Emails\n→ e']);
+  });
+
+  it('keeps the derived label when the vocabulary declares no phrase', async () => {
+    const { reading } = await render('inbound_intake', { vocabulary: { email: { name: 'Email' } } });
+    expect(names(reading, 'bpmn:StartEvent')).toEqual(['On Email Emails\n→ e']);
+  });
+});
+
 describe('the package', () => {
   it('states the version it exports', async () => {
     const manifest: { version: string } = JSON.parse(await readFile(join(import.meta.dirname, '..', 'package.json'), 'utf8'));

@@ -12,6 +12,8 @@ export interface System {
    *  binding added when two connections share an adapter ("Slack (ops)"). */
   display: string;
   icon?: string;
+  /** The sentence its module declares for a listen on it, when one renders. */
+  startPhrase?: string;
 }
 
 /** A step's reach into a connected system, drawn as a message flow labelled

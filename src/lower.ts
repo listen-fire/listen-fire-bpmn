@@ -171,7 +171,7 @@ function startOf(listen: ListenDeclaration, fn: MovementDeclaration, index: Prog
       const what = edges.join(' › ');
       const where = system?.display ?? listen.instance;
       const touch: Touch | undefined = system === undefined ? undefined : { system, direction: 'read', what };
-      return { kind: 'message', name: `On ${where} ${what}`, result, message: `${where} ${what}`, doc, ...(touch === undefined ? {} : { touch }) };
+      return { kind: 'message', name: system?.startPhrase ?? `On ${where} ${what}`, result, message: `${where} ${what}`, doc, ...(touch === undefined ? {} : { touch }) };
     }
   }
 }

@@ -20,7 +20,7 @@ import { FIRST_PARTY_VOCABULARY, type Vocabulary } from './vocabulary.js';
 
 /** This renderer's release. Its line reads the programs of one listen-fire
  *  compatibility key: this one reads 0.16. */
-export const RENDERER_VERSION = '0.16.0';
+export const RENDERER_VERSION = '0.16.1';
 
 export type Rendering =
   | {
