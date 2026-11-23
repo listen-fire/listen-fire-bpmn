@@ -1,0 +1,54 @@
+name: npm-stage
+# Stages @listen-fire/bpmn on npm when its version is not there yet. Staged is
+# not published: a maintainer approves it on npmjs.com (2FA) before it goes
+# live. Authentication is npm trusted publishing (this job's OIDC token); no
+# npm token is stored anywhere. The package's trusted publisher names this
+# file, so renaming it breaks it. Most pushes stage nothing.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: npm-stage
+  cancel-in-progress: false
+
+jobs:
+  stage:
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.4
+          registry-url: "https://registry.npmjs.org"
+      # `npm stage` needs npm 11.15.0 or later; pinned so a release never changes under us.
+      - run: npm install -g npm@11.21.2
+      - run: npm ci
+      - run: npm run code:type-check
+      - run: npm test
+      - run: npm run build
+      - name: Stage this version unless npm has it
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if npm view "@listen-fire/bpmn@$version" version >/dev/null 2>&1; then
+            echo "npm already has @listen-fire/bpmn@$version; nothing to stage"
+            exit 0
+          fi
+          set +e
+          out=$(npm stage publish --access public --tag latest --ignore-scripts 2>&1)
+          code=$?
+          set -e
+          echo "$out"
+          # A version staged but not yet approved is not on the registry, so a
+          # later push stages it again and npm answers with a conflict.
+          if [ $code -ne 0 ] && echo "$out" | grep -qiE 'E409|409 Conflict|already staged|already exists in the staging'; then
+            echo "@listen-fire/bpmn@$version is already staged, awaiting approval"
+            exit 0
+          fi
+          exit $code
