@@ -1,0 +1,98 @@
+/* @listen-fire/bpmn viewer stylesheet, for a diagram shown with bpmn-js and
+   marked by `styleDiagram` (the package's `./viewer` entry).
+   Light: the colours are the file's own (BPMN in Color); this adds the AI
+   badge, the chips behind blanks and result names, and system icons.
+   Dark: add the class `lf-dark` to the element given to bpmn-js, or any
+   ancestor of it; the kinds of step keep their hues on a dark panel.
+   The bpmn.io watermark is never hidden: on dark it gets a light backing so
+   it stays legible. */
+
+.lf-bpmn {
+  --lf-font: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --lf-ai: #7c3aed;
+  --lf-read: #2563eb;
+  --lf-write: #4d7c0f;
+  --lf-decision: #b45309;
+  --lf-failure: #dc2626;
+  --lf-blank: #0e7490;
+  --lf-panel: #ffffff;
+}
+
+.lf-bpmn .lf-badge {
+  display: inline-block;
+  font: 700 10px/1 var(--lf-font);
+  letter-spacing: 0.6px;
+  padding: 3px 6px;
+  border-radius: 999px;
+  color: #ffffff;
+  background: var(--lf-ai);
+  box-shadow: 0 0 0 2px var(--lf-panel);
+}
+
+.lf-bpmn .lf-icon {
+  display: block;
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+}
+
+.lf-bpmn .lf-chip { stroke: none; }
+.lf-bpmn .lf-chip.lf-blank {
+  fill: rgba(14, 116, 144, 0.1);
+  stroke: var(--lf-blank);
+  stroke-width: 1;
+  stroke-dasharray: 3 2;
+}
+.lf-bpmn .lf-chip.lf-result { fill: rgba(37, 99, 235, 0.12); }
+
+/* Dark */
+
+.lf-dark .lf-bpmn {
+  --lf-ink: #e8eaf0;
+  --lf-dim: #8b92a5;
+  --lf-panel: #12151d;
+  --lf-panel-deep: #0e1118;
+  --lf-line: #3a4152;
+  --lf-ai: #c792ea;
+  --lf-read: #82aaff;
+  --lf-write: #a1b65b;
+  --lf-decision: #ffcb6b;
+  --lf-failure: #f87171;
+  --lf-blank: #89ddff;
+  background: var(--lf-panel);
+}
+
+.lf-dark .lf-bpmn .lf-badge { color: var(--lf-panel); }
+
+.lf-dark .lf-bpmn .djs-visual > :first-child { stroke: var(--lf-dim) !important; fill: var(--lf-panel) !important; }
+.lf-dark .lf-bpmn .djs-visual path,
+.lf-dark .lf-bpmn .djs-visual polygon,
+.lf-dark .lf-bpmn .djs-visual polyline { stroke: var(--lf-ink); }
+.lf-dark .lf-bpmn .djs-element .djs-visual > text,
+.lf-dark .lf-bpmn .djs-element .djs-visual text { fill: var(--lf-ink) !important; stroke: none !important; }
+.lf-dark .lf-bpmn .djs-connection .djs-visual > path { stroke: var(--lf-dim) !important; }
+.lf-dark .lf-bpmn marker path { fill: var(--lf-dim) !important; stroke: var(--lf-dim) !important; }
+.lf-dark .lf-bpmn .lf-message .djs-visual > path { stroke: #6b7388 !important; }
+.lf-dark .lf-bpmn .lf-message marker path { fill: var(--lf-panel) !important; }
+
+.lf-dark .lf-bpmn .lf-pool .djs-visual > :first-child { fill: var(--lf-panel-deep) !important; stroke: var(--lf-line) !important; }
+.lf-dark .lf-bpmn .lf-pool .djs-visual > path,
+.lf-dark .lf-bpmn .lf-pool .djs-visual > polyline { stroke: var(--lf-line) !important; }
+.lf-dark .lf-bpmn .lf-system .djs-visual > :first-child { fill: #161a24 !important; stroke: var(--lf-line) !important; }
+.lf-dark .lf-bpmn .lf-system .djs-visual text { fill: var(--lf-dim) !important; font-weight: 600; }
+
+.lf-dark .lf-bpmn .lf-ai .djs-visual > :first-child { fill: color-mix(in srgb, var(--lf-ai) 16%, var(--lf-panel)) !important; stroke: var(--lf-ai) !important; stroke-width: 2px !important; }
+.lf-dark .lf-bpmn .lf-ai .djs-visual path { stroke: var(--lf-ai) !important; }
+.lf-dark .lf-bpmn .lf-read .djs-visual > :first-child { fill: color-mix(in srgb, var(--lf-read) 14%, var(--lf-panel)) !important; stroke: var(--lf-read) !important; }
+.lf-dark .lf-bpmn .lf-read .djs-visual path { stroke: var(--lf-read); }
+.lf-dark .lf-bpmn .lf-write .djs-visual > :first-child { fill: color-mix(in srgb, var(--lf-write) 15%, var(--lf-panel)) !important; stroke: var(--lf-write) !important; }
+.lf-dark .lf-bpmn .lf-write .djs-visual path { stroke: var(--lf-write); }
+.lf-dark .lf-bpmn .lf-decision .djs-visual > :first-child { fill: color-mix(in srgb, var(--lf-decision) 12%, var(--lf-panel)) !important; stroke: var(--lf-decision) !important; }
+.lf-dark .lf-bpmn .lf-decision .djs-visual path { stroke: var(--lf-decision) !important; }
+.lf-dark .lf-bpmn .lf-failure .djs-visual > :first-child { fill: color-mix(in srgb, var(--lf-failure) 18%, var(--lf-panel)) !important; stroke: var(--lf-failure) !important; }
+.lf-dark .lf-bpmn .lf-failure .djs-visual path { fill: var(--lf-failure) !important; stroke: var(--lf-failure) !important; }
+
+.lf-dark .lf-bpmn .lf-chip.lf-blank { fill: rgba(137, 221, 255, 0.12); }
+.lf-dark .lf-bpmn .lf-chip.lf-result { fill: rgba(130, 170, 255, 0.2); }
+
+.lf-dark .bjs-powered-by { background: #e8eaf0; border-radius: 4px; padding: 2px; }
