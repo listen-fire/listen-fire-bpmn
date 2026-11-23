@@ -1,0 +1,26 @@
+# Runs the renderer's tests against the newest listen-fire release, so a
+# release that breaks the interface the renderer reads fails here before a
+# host finds out. A failure is the signal to update; GitHub notifies on it.
+name: listen-fire release
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  latest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.4
+          cache: npm
+      - run: npm ci
+      # The newest release, whatever its compatibility key: a new key failing
+      # here is how this line learns it needs a successor.
+      - run: npm install --no-save @listen-fire/movement-lang@latest
+      - run: echo "testing against movement-lang $(node -p "require('@listen-fire/movement-lang/package.json').version")"
+      - run: npm run code:type-check
+      - run: npm test

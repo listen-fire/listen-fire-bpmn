@@ -1,8 +1,19 @@
 {
   "name": "@listen-fire/bpmn",
   "version": "0.16.0",
-  "private": true,
   "description": "Draw a checked listen-fire program as a BPMN 2.0 diagram",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/listen-fire/listen-fire-bpmn.git"
+  },
+  "homepage": "https://github.com/listen-fire/listen-fire-bpmn#readme",
+  "keywords": [
+    "listen-fire",
+    "bpmn",
+    "bpmn-2.0",
+    "diagram"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -25,10 +36,10 @@
     "node": ">=22.23.4 <23"
   },
   "dependencies": {
-    "@listen-fire/movement-lang": "0.16.1",
     "bpmn-moddle": "10.3.1"
   },
   "devDependencies": {
+    "@listen-fire/movement-lang": "0.16.1",
     "@types/node": "22.15.30",
     "bpmn-js": "17.11.1",
     "playwright": "1.64.1",
@@ -40,10 +51,18 @@
     "code:type-check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "test": "vitest run",
     "examples": "vitest run -u",
-    "review": "npm run build && node scripts/review.mjs"
+    "review": "npm run build && node scripts/review.mjs",
+    "prepublishOnly": "npm run code:type-check && npm test && npm run build"
   },
   "files": [
     "dist",
-    "viewer"
-  ]
+    "viewer",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "@listen-fire/movement-lang": ">=0.16.1 <0.17.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
 }
